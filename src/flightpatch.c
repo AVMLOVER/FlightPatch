@@ -423,15 +423,18 @@ static BOOL offline_root(const wchar_t *root)
 
 static int offline_usage(void)
 {
-    fwprintf(stderr, L"Usage: flightpatch /image OFFLINE_ROOT [/boot BOOT_ROOT] [/recovery RECOVERY_ROOT] [/spp RTM_FOLDER]\n"
-                     L"       flightpatch /spp RTM_FOLDER /target OFFLINE_ROOT\n");
+    fwprintf(stderr, L"Usage: flightpatch /image OFFLINE_ROOT [/boot BOOT_ROOT] [/recovery RECOVERY_ROOT] [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
+                     L"       flightpatch {/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT} /target OFFLINE_ROOT\n"
+                     L"       flightpatch /spp-restore CLEAN_IMAGE_ROOT /target OFFLINE_ROOT\n"
+                     L"       flightpatch /spp-restore ORIGINAL_FILE /target OFFLINE_ROOT /file WINDOWS_RELATIVE_PATH\n");
     return 2;
 }
 
 static int run_offline(int argc, wchar_t **argv)
 {
     const wchar_t *image_arg = NULL, *boot_arg = NULL, *recovery_arg = NULL;
-    const wchar_t *source_arg = NULL, *target_arg = NULL;
+    const wchar_t *source_arg = NULL, *target_arg = NULL, *file_arg = NULL;
+    SppMode spp_mode = SPP_RTM;
     for (int i = 1; i < argc; i += 2) {
         if (i + 1 >= argc || !argv[i + 1][0] || argv[i + 1][0] == L'/')
             return offline_usage();
@@ -442,17 +445,27 @@ static int run_offline(int argc, wchar_t **argv)
             argument = &boot_arg;
         else if (!_wcsicmp(argv[i], L"/recovery"))
             argument = &recovery_arg;
-        else if (!_wcsicmp(argv[i], L"/spp"))
+        else if (!_wcsicmp(argv[i], L"/spp") || !_wcsicmp(argv[i], L"/spp-reference") ||
+                 !_wcsicmp(argv[i], L"/spp-restore")) {
             argument = &source_arg;
+            if (!_wcsicmp(argv[i], L"/spp-restore"))
+                spp_mode = SPP_RESTORE;
+            else if (!_wcsicmp(argv[i], L"/spp-reference"))
+                spp_mode = SPP_REFERENCE;
+        }
         else if (!_wcsicmp(argv[i], L"/target"))
             argument = &target_arg;
+        else if (!_wcsicmp(argv[i], L"/file"))
+            argument = &file_arg;
         else
             return offline_usage();
         if (*argument)
             return offline_usage();
         *argument = argv[i + 1];
     }
-    if ((image_arg && target_arg) || (!image_arg && (!source_arg || !target_arg || boot_arg || recovery_arg)))
+    if ((file_arg && spp_mode != SPP_RESTORE) ||
+        (image_arg && (target_arg || spp_mode == SPP_RESTORE)) ||
+        (!image_arg && (!source_arg || !target_arg || boot_arg || recovery_arg)))
         return offline_usage();
 
     wchar_t target[PATH_SIZE], boot[PATH_SIZE], recovery[PATH_SIZE], source[PATH_SIZE];
@@ -471,22 +484,28 @@ static int run_offline(int argc, wchar_t **argv)
         privilege_hint();
         return 3;
     }
+    if (file_arg) {
+        if (restore_spp_file(source, target, file_arg))
+            return 0;
+        fwprintf(stderr, L"Single-file restore requires an original SPP file and a safe path such as Windows\\System32\\sppc.dll.\n");
+        return 1;
+    }
 
     BCRYPT_ALG_HANDLE algorithm;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0) {
         fwprintf(stderr, L"Could not initialize the Windows SHA-256 provider.\n");
         return 1;
     }
-    if (source_arg && !replace_spp(source, target, TRUE)) {
+    if (source_arg && !replace_spp(source, target, TRUE, spp_mode)) {
         BCryptCloseAlgorithmProvider(algorithm, 0);
         return 1;
     }
     BOOL ok = TRUE;
     if (ok && image_arg)
         ok = patch_offline_image(algorithm, target, boot_arg ? boot : NULL, recovery_arg ? recovery : NULL);
-    if (ok && source_arg && !replace_spp(source, target, FALSE)) {
+    if (ok && source_arg && !replace_spp(source, target, FALSE, spp_mode)) {
         if (image_arg)
-            fwprintf(stderr, L"Offline boot updates completed before SPP failed. The operations can be retried.\n");
+            fwprintf(stderr, L"Offline boot updates completed before SPP failed. The SPP operation can be retried separately.\n");
         ok = FALSE;
     }
     BCryptCloseAlgorithmProvider(algorithm, 0);

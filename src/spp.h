@@ -2,6 +2,8 @@
 #include <sddl.h>
 #include <winver.h>
 
+typedef enum { SPP_RTM, SPP_REFERENCE, SPP_RESTORE } SppMode;
+
 typedef struct {
     wchar_t source[PATH_SIZE], target[PATH_SIZE];
     wchar_t staged[PATH_SIZE], backup[PATH_SIZE];
@@ -19,7 +21,7 @@ typedef struct {
     SppDirectory *directories;
     size_t count, allocated, dir_count, dir_allocated;
     PSID owner_sid, service_sid;
-    WORD machine;
+    SppMode mode;
 } SppPlan;
 
 static BOOL spp_missing(DWORD error)
@@ -105,6 +107,30 @@ static const wchar_t *const spp_certificates[] = {
     L".cat", L".cer", L".crt", L".der", L".p7b", L".p7c", L".sst", NULL
 };
 
+static BOOL spp_reference_binary(const wchar_t *name)
+{
+    static const wchar_t *const names[] = {
+        L"spp.dll", L"sppc.dll", L"sppcext.dll", L"SppExtComObj.exe",
+        L"sppobjs.dll", L"sppsvc.exe", L"sppwinob.dll", L"sppwmi.dll"
+    };
+    for (unsigned i = 0; i < sizeof names / sizeof names[0]; ++i)
+        if (!_wcsicmp(name, names[i]))
+            return TRUE;
+    return FALSE;
+}
+
+/* Keep these target files, which were identical in the original and modified reference. */
+static BOOL spp_keep_target(const wchar_t *relative, const wchar_t *name)
+{
+    if (!*relative)
+        return !_wcsicmp(name, L"sppcomapi.dll") || !_wcsicmp(name, L"sppcommdlg.dll") ||
+               !_wcsicmp(name, L"sppinst.dll");
+    return !_wcsicmp(relative, L"spp\\tokens\\skus\\csvlk-pack") &&
+           (!_wcsicmp(name, L"csvlk-pack-Volume-CSVLK-2-ul-store-rtm.xrm-ms") ||
+            !_wcsicmp(name, L"csvlk-pack-Volume-CSVLK-3-ul-store-rtm.xrm-ms") ||
+            !_wcsicmp(name, L"csvlk-pack-Volume-CSVLK-4-ul-store-rtm.xrm-ms"));
+}
+
 static BOOL spp_add_directory(SppPlan *plan, const wchar_t *target, BOOL service)
 {
     if (!spp_path_type(target, TRUE, TRUE))
@@ -126,10 +152,43 @@ static BOOL spp_add_directory(SppPlan *plan, const wchar_t *target, BOOL service
     return TRUE;
 }
 
-static BOOL spp_add_file(SppPlan *plan, const wchar_t *source, const wchar_t *target,
-                         BOOL catroot, BOOL service, BOOL check_machine)
+static BOOL spp_equal(HANDLE source, HANDLE destination, BYTE *buffer, BOOL *equal)
 {
-    static const wchar_t *const binaries[] = {L".dll", L".exe", L".sys", L".cpl", L".ocx", NULL};
+    DWORD length, read;
+    do {
+        if (!ReadFile(source, buffer, 64 * 1024, &length, NULL) ||
+            !ReadFile(destination, buffer + 64 * 1024, 64 * 1024, &read, NULL))
+            return FALSE;
+        if (length != read || memcmp(buffer, buffer + 64 * 1024, length)) {
+            *equal = FALSE;
+            return TRUE;
+        }
+    } while (length);
+    *equal = TRUE;
+    return TRUE;
+}
+
+static BOOL spp_reference_differs(HANDLE source, const wchar_t *target, BOOL *differs)
+{
+    *differs = TRUE;
+    HANDLE old = CreateFileW(target, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (old == INVALID_HANDLE_VALUE)
+        return spp_missing(GetLastError());
+    BYTE *buffer = malloc(128 * 1024);
+    BOOL equal = FALSE;
+    BOOL ok = buffer && spp_equal(source, old, buffer, &equal);
+    free(buffer);
+    CloseHandle(old);
+    *differs = !equal;
+    return ok;
+}
+
+static const wchar_t *const spp_binaries[] = {L".dll", L".exe", L".sys", L".cpl", L".ocx", NULL};
+
+static BOOL spp_add_file(SppPlan *plan, const wchar_t *source, const wchar_t *target,
+                         BOOL catroot, BOOL service, WORD machine)
+{
     if (!spp_path_type(source, FALSE, FALSE) || !spp_path_type(target, FALSE, TRUE)) {
         fwprintf(stderr, L"Invalid SPP source or destination: %ls -> %ls.\n", source, target);
         return FALSE;
@@ -146,11 +205,19 @@ static BOOL spp_add_file(SppPlan *plan, const wchar_t *source, const wchar_t *ta
         fwprintf(stderr, L"Cannot read SPP donor %ls (Win32 %lu).\n", source, GetLastError());
         return FALSE;
     }
+    BOOL differs = TRUE;
+    BOOL comparable = plan->mode != SPP_REFERENCE || spp_reference_differs(input, target, &differs);
     CloseHandle(input);
-    if (check_machine && spp_ext(source, binaries) && spp_pe_machine(source) != plan->machine) {
+    if (!comparable) {
+        fwprintf(stderr, L"Cannot compare reference SPP file %ls with %ls.\n", source, target);
+        return FALSE;
+    }
+    if (machine && spp_ext(target, spp_binaries) && spp_pe_machine(source) != machine) {
         fwprintf(stderr, L"SPP donor architecture mismatch or invalid PE: %ls.\n", source);
         return FALSE;
     }
+    if (!differs)
+        return TRUE;
     if (plan->count == plan->allocated) {
         size_t capacity = plan->allocated ? plan->allocated * 2 : 128;
         SppFile *entries = realloc(plan->files, capacity * sizeof *entries);
@@ -174,8 +241,9 @@ static BOOL spp_add_file(SppPlan *plan, const wchar_t *source, const wchar_t *ta
 }
 
 static BOOL spp_collect(SppPlan *plan, const wchar_t *source, const wchar_t *target,
-                        const wchar_t *relative, BOOL catroot)
+                        const wchar_t *relative, BOOL catroot, WORD machine)
 {
+    static const wchar_t *const licenses[] = {L".xrm-ms", NULL};
     BOOL top = !*relative;
     BOOL service = !catroot && (!_wcsicmp(relative, L"spp\\store\\2.0") ||
                                 !_wcsnicmp(relative, L"spp\\store\\2.0\\", 14));
@@ -195,6 +263,13 @@ static BOOL spp_collect(SppPlan *plan, const wchar_t *source, const wchar_t *tar
         if ((top && (directory || _wcsnicmp(name, L"spp", 3))) ||
             (catroot && !directory && !spp_ext(name, spp_certificates)))
             continue;
+        if (plan->mode != SPP_RESTORE && !catroot && !directory && spp_keep_target(relative, name))
+            continue;
+        if (plan->mode != SPP_RTM &&
+            ((top && !spp_reference_binary(name)) ||
+             (!top && directory && !_wcsicmp(relative, L"spp") && !_wcsicmp(name, L"store")) ||
+             (!top && !directory && !spp_ext(name, licenses))))
+            continue;
         wchar_t src[PATH_SIZE], dst[PATH_SIZE], child[PATH_SIZE];
         if (((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
              (directory || data.dwReserved0 != IO_REPARSE_TAG_WIM)) ||
@@ -204,17 +279,23 @@ static BOOL spp_collect(SppPlan *plan, const wchar_t *source, const wchar_t *tar
         }
         if (directory) {
             size_t old_files = plan->count, old_directories = plan->dir_count;
-            if (!build_path(child, relative, name) ||
-                !spp_add_directory(plan, dst, service ||
-                                   !_wcsicmp(child, L"spp\\store\\2.0")) ||
-                !spp_collect(plan, src, dst, child, catroot)) {
+            if (plan->mode != SPP_RTM && !_wcsicmp(relative, L"spp\\tokens\\skus") &&
+                !spp_path_type(dst, TRUE, FALSE)) {
+                fwprintf(stderr, L"SPP reference SKU is not present in the target: %ls.\n", dst);
                 ok = FALSE;
                 break;
             }
-            if (catroot && plan->count == old_files)
+            if (!build_path(child, relative, name) ||
+                !spp_add_directory(plan, dst, service ||
+                                   !_wcsicmp(child, L"spp\\store\\2.0")) ||
+                !spp_collect(plan, src, dst, child, catroot, machine)) {
+                ok = FALSE;
+                break;
+            }
+            if ((catroot || plan->mode != SPP_RTM) && plan->count == old_files)
                 plan->dir_count = old_directories;
         } else if (!spp_add_file(plan, src, dst, catroot,
-                                service || (top && !_wcsicmp(name, L"sppsvc.exe")), top)) {
+                                service || (top && !_wcsicmp(name, L"sppsvc.exe")), machine)) {
             ok = FALSE;
             break;
         }
@@ -243,7 +324,7 @@ static BOOL spp_collect_flat_catalogs(SppPlan *plan, const wchar_t *source, cons
         wchar_t src[PATH_SIZE], dst[PATH_SIZE];
         ok = build_path(src, source, name) && build_path(dst, group, name) &&
              spp_add_directory(plan, catroot, FALSE) && spp_add_directory(plan, group, FALSE) &&
-             spp_add_file(plan, src, dst, TRUE, FALSE, FALSE);
+             spp_add_file(plan, src, dst, TRUE, FALSE, 0);
     } while (ok && FindNextFileW(find, &data));
     if (ok && GetLastError() != ERROR_NO_MORE_FILES)
         ok = FALSE;
@@ -251,7 +332,62 @@ static BOOL spp_collect_flat_catalogs(SppPlan *plan, const wchar_t *source, cons
     return ok;
 }
 
-static BOOL spp_kernel_version(const wchar_t *kernel, wchar_t version[24])
+static BOOL spp_collect_tree(SppPlan *plan, const wchar_t *donor, const wchar_t *target,
+                             BOOL required, WORD machine)
+{
+    wchar_t src[PATH_SIZE], dst[PATH_SIZE];
+    if (!build_path(src, donor, L"spp") || !build_path(dst, target, L"spp"))
+        return FALSE;
+    if (!spp_path_type(src, TRUE, FALSE))
+        return !required && spp_path_type(src, TRUE, TRUE);
+    size_t before = plan->count;
+    return spp_add_directory(plan, dst, FALSE) && spp_collect(plan, src, dst, L"spp", FALSE, machine) &&
+           (!required || plan->mode == SPP_REFERENCE || plan->count > before);
+}
+
+static BOOL spp_collect_catalogs(SppPlan *plan, const wchar_t *donor, const wchar_t *catroot)
+{
+    wchar_t src[PATH_SIZE];
+    if (!build_path(src, donor, L"CatRoot"))
+        return FALSE;
+    if (spp_path_type(src, TRUE, FALSE)) {
+        if (!spp_add_directory(plan, catroot, FALSE) ||
+            !spp_collect(plan, src, catroot, L"CatRoot", TRUE, 0))
+            return FALSE;
+    } else if (!spp_path_type(src, TRUE, TRUE)) {
+        return FALSE;
+    }
+    return spp_collect_flat_catalogs(plan, donor, catroot);
+}
+
+/* Accept a sibling of System32 or a SysWOW64 folder inside a flattened export. */
+static BOOL spp_find_wow64(const wchar_t *source, const wchar_t *donor, wchar_t result[PATH_SIZE])
+{
+    const wchar_t *roots[] = {source, source, donor};
+    const wchar_t *names[] = {L"Windows\\SysWOW64", L"SysWOW64", L"SysWOW64"};
+    result[0] = L'\0';
+    for (unsigned i = 0; i < sizeof roots / sizeof roots[0]; ++i) {
+        wchar_t path[PATH_SIZE];
+        if (!build_path(path, roots[i], names[i]))
+            return FALSE;
+        if (!_wcsicmp(path, result))
+            continue;
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && spp_missing(GetLastError()))
+            continue;
+        if (!spp_path_chain(path, TRUE)) {
+            fwprintf(stderr, L"Invalid SysWOW64 donor directory: %ls.\n", path);
+            return FALSE;
+        }
+        if (result[0]) {
+            fwprintf(stderr, L"More than one SysWOW64 donor directory: %ls and %ls.\n", result, path);
+            return FALSE;
+        }
+        wcscpy(result, path);
+    }
+    return TRUE;
+}
+
+static BOOL spp_kernel_version(const wchar_t *kernel, wchar_t version[24], BOOL build_only)
 {
     DWORD unused = 0;
     DWORD size = GetFileVersionInfoSizeW(kernel, &unused);
@@ -260,10 +396,14 @@ static BOOL spp_kernel_version(const wchar_t *kernel, wchar_t version[24])
     UINT length;
     BOOL ok = data && GetFileVersionInfoW(kernel, 0, size, data) &&
               VerQueryValueW(data, L"\\", (void **)&info, &length) &&
-              length >= sizeof *info && info->dwSignature == 0xfeef04bdu &&
-              swprintf(version, 24, L"%u.%u.%u.%u", HIWORD(info->dwFileVersionMS),
-                       LOWORD(info->dwFileVersionMS), HIWORD(info->dwFileVersionLS),
-                       LOWORD(info->dwFileVersionLS)) > 0;
+              length >= sizeof *info && info->dwSignature == 0xfeef04bdu;
+    if (ok) {
+        int written = build_only ? swprintf(version, 24, L"%u", HIWORD(info->dwFileVersionLS)) :
+                                   swprintf(version, 24, L"%u.%u.%u.%u", HIWORD(info->dwFileVersionMS),
+                                            LOWORD(info->dwFileVersionMS), HIWORD(info->dwFileVersionLS),
+                                            LOWORD(info->dwFileVersionLS));
+        ok = written > 0;
+    }
     free(data);
     return ok;
 }
@@ -296,7 +436,7 @@ static BOOL spp_plan_old_catalogs(SppPlan *plan, const wchar_t *kernel)
         if (_wcsnicmp(name, sku, sizeof sku / sizeof sku[0] - 1) || !suffix ||
             !spp_catalog_version(suffix + 1))
             continue;
-        if (!version[0] && !spp_kernel_version(kernel, version)) {
+        if (!version[0] && !spp_kernel_version(kernel, version, FALSE)) {
             fwprintf(stderr, L"Cannot determine the target version for SPP catalog cleanup: %ls.\n", kernel);
             return FALSE;
         }
@@ -408,7 +548,7 @@ static BOOL spp_copy_verified(HANDLE source, HANDLE destination)
     BYTE *buffer = malloc(128 * 1024);
     if (!buffer)
         return FALSE;
-    DWORD length = 0, written, read;
+    DWORD length = 0, written;
     LARGE_INTEGER start = {0};
     BOOL ok = TRUE;
     do {
@@ -418,15 +558,36 @@ static BOOL spp_copy_verified(HANDLE source, HANDLE destination)
     ok = ok && FlushFileBuffers(destination) &&
          SetFilePointerEx(source, start, NULL, FILE_BEGIN) &&
          SetFilePointerEx(destination, start, NULL, FILE_BEGIN);
-    do {
-        if (!ok)
-            break;
-        ok = ReadFile(source, buffer, 64 * 1024, &length, NULL) &&
-             ReadFile(destination, buffer + 64 * 1024, 64 * 1024, &read, NULL) &&
-             length == read && !memcmp(buffer, buffer + 64 * 1024, length);
-    } while (ok && length);
+    BOOL equal = FALSE;
+    ok = ok && spp_equal(source, destination, buffer, &equal) && equal;
     free(buffer);
     return ok;
+}
+
+static DWORD spp_restore_metadata(HANDLE source, HANDLE destination)
+{
+    FILETIME modified;
+    if (!GetFileTime(source, NULL, NULL, &modified) ||
+        !SetFileTime(destination, NULL, NULL, &modified))
+        return GetLastError();
+
+    SECURITY_INFORMATION flags = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    DWORD error = GetSecurityInfo(source, SE_FILE_OBJECT, flags, NULL, NULL, NULL, NULL, &descriptor);
+    if (error == ERROR_SUCCESS) {
+        SECURITY_DESCRIPTOR_CONTROL control;
+        DWORD revision;
+        if (!GetSecurityDescriptorControl(descriptor, &control, &revision)) {
+            error = GetLastError();
+        } else {
+            flags |= (control & SE_DACL_PROTECTED) ? PROTECTED_DACL_SECURITY_INFORMATION :
+                                                     UNPROTECTED_DACL_SECURITY_INFORMATION;
+            if (!SetKernelObjectSecurity(destination, flags, descriptor))
+                error = GetLastError();
+        }
+    }
+    LocalFree(descriptor);
+    return error;
 }
 
 static BOOL spp_stage(SppPlan *plan, SppFile *entry)
@@ -442,7 +603,8 @@ static BOOL spp_stage(SppPlan *plan, SppFile *entry)
         ok = entry->made && spp_copy_verified(source, output);
     }
     if (ok) {
-        error = spp_acl(output, old, plan, entry->catroot, entry->service, FALSE);
+        error = plan->mode == SPP_RESTORE ? spp_restore_metadata(source, output) :
+                                          spp_acl(output, old, plan, entry->catroot, entry->service, FALSE);
         ok = error == ERROR_SUCCESS;
     } else {
         error = GetLastError();
@@ -565,7 +727,7 @@ static BOOL spp_apply(SppPlan *plan)
     return ok;
 }
 
-static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check_only)
+static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check_only, SppMode mode)
 {
     static const wchar_t *const layouts[] = {L"Windows\\System32", L"System32", L""};
     wchar_t donor[PATH_SIZE], system32[PATH_SIZE], probe[PATH_SIZE];
@@ -588,49 +750,112 @@ static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check
         fwprintf(stderr, L"Provide separate SPP donor and offline Windows target directories.\n");
         return FALSE;
     }
-    SppPlan plan = {0};
+    WORD machine;
     if (!build_path(probe, system32, L"ntoskrnl.exe") || !spp_path_type(probe, FALSE, FALSE) ||
-        !(plan.machine = spp_pe_machine(probe))) {
+        !(machine = spp_pe_machine(probe))) {
         fwprintf(stderr, L"Cannot determine the target Windows architecture.\n");
         return FALSE;
     }
-    BOOL ok = spp_collect(&plan, donor, system32, L"", FALSE) && plan.count;
-    if (!ok)
+    if (mode != SPP_RTM) {
+        wchar_t ref_kernel[PATH_SIZE], ref_build[24], target_build[24];
+        if (!build_path(ref_kernel, donor, L"ntoskrnl.exe") ||
+            !spp_path_type(ref_kernel, FALSE, FALSE) || spp_pe_machine(ref_kernel) != machine ||
+            !spp_kernel_version(ref_kernel, ref_build, TRUE) || !spp_kernel_version(probe, target_build, TRUE)) {
+            fwprintf(stderr, L"Provide an intact SPP reference image with the same architecture as the target.\n");
+            return FALSE;
+        }
+        if (wcscmp(ref_build, target_build)) {
+            fwprintf(stderr, L"SPP reference build %ls differs from target build %ls.\n", ref_build, target_build);
+            return FALSE;
+        }
+    }
+    SppPlan plan = {.mode = mode};
+    BOOL ok = spp_collect(&plan, donor, system32, L"", FALSE, machine) &&
+              (plan.count || mode == SPP_REFERENCE);
+    if (!ok) {
         fwprintf(stderr, L"Cannot prepare spp* files in %ls.\n", donor);
-    wchar_t src[PATH_SIZE], dst[PATH_SIZE];
-    if (ok) {
-        size_t before = plan.count;
-        ok = build_path(src, donor, L"spp") && build_path(dst, system32, L"spp") &&
-             spp_path_type(src, TRUE, FALSE) && spp_add_directory(&plan, dst, FALSE) &&
-             spp_collect(&plan, src, dst, L"spp", FALSE) && plan.count > before;
-        if (!ok)
-            fwprintf(stderr, L"Cannot prepare the spp tree in %ls.\n", donor);
+    } else if (!spp_collect_tree(&plan, donor, system32, TRUE, 0)) {
+        fwprintf(stderr, L"Cannot prepare the spp tree in %ls.\n", donor);
+        ok = FALSE;
     }
-    if (ok) {
-        size_t before = plan.count;
-        ok = build_path(src, donor, L"CatRoot") && build_path(dst, system32, L"CatRoot");
-        if (ok && spp_path_type(src, TRUE, FALSE))
-            ok = spp_add_directory(&plan, dst, FALSE) && spp_collect(&plan, src, dst, L"CatRoot", TRUE);
-        else if (ok)
-            ok = spp_path_type(src, TRUE, TRUE);
+    size_t native_count = plan.count, wow_count = 0;
+    wchar_t wow_donor[PATH_SIZE] = {0}, wow_target[PATH_SIZE];
+    if (ok && machine == IMAGE_FILE_MACHINE_AMD64)
+        ok = spp_find_wow64(source, donor, wow_donor);
+    if (ok && wow_donor[0]) {
+        ok = build_path(wow_target, target, L"Windows\\SysWOW64") &&
+             spp_path_chain(wow_target, TRUE) && _wcsicmp(wow_donor, wow_target);
         if (ok)
-            ok = spp_collect_flat_catalogs(&plan, donor, dst) && plan.count > before;
+            ok = spp_collect(&plan, wow_donor, wow_target, L"", FALSE, IMAGE_FILE_MACHINE_I386) &&
+                 spp_collect_tree(&plan, wow_donor, wow_target, FALSE, IMAGE_FILE_MACHINE_I386);
         if (!ok)
-            fwprintf(stderr, L"Cannot prepare CatRoot files from %ls. Supply a catalog beside sppsvc.exe or files under CatRoot.\n", donor);
+            fwprintf(stderr, L"Cannot prepare SysWOW64 SPP files from %ls. Use a separate x86 donor folder and an offline target with Windows\\SysWOW64.\n", wow_donor);
+        wow_count = plan.count - native_count;
     }
-    if (ok)
+    size_t catalog_count = 0;
+    if (ok && mode == SPP_RTM) {
+        size_t before = plan.count;
+        wchar_t catroot[PATH_SIZE];
+        ok = build_path(catroot, system32, L"CatRoot") && spp_collect_catalogs(&plan, donor, catroot) &&
+             (!wow_donor[0] || spp_collect_catalogs(&plan, wow_donor, catroot)) && plan.count > before;
+        catalog_count = plan.count - before;
+        if (!ok)
+            fwprintf(stderr, L"Cannot prepare CatRoot files from %ls. Supply each catalog once, beside the SPP files or under CatRoot.\n", source);
+    }
+    if (ok && mode == SPP_RTM)
         ok = spp_plan_old_catalogs(&plan, probe);
-    if (ok && !check_only) {
-        ok = ConvertStringSidToSidW(L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
-                                    &plan.owner_sid) &&
-             ConvertStringSidToSidW(L"S-1-5-80-123231216-2592883651-3715271367-3753151631-4175906628",
-                                    &plan.service_sid) && spp_apply(&plan);
+    if (ok && !check_only && plan.count) {
+        if (mode != SPP_RESTORE)
+            ok = ConvertStringSidToSidW(L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+                                        &plan.owner_sid) &&
+                 ConvertStringSidToSidW(L"S-1-5-80-123231216-2592883651-3715271367-3753151631-4175906628",
+                                        &plan.service_sid);
+        if (ok)
+            ok = spp_apply(&plan);
     }
-    if (ok)
-        wprintf(check_only ? L"SPP preflight passed for %zu files.\n" : L"Replaced %zu SPP files.\n", plan.count);
+    if (ok) {
+        wprintf(check_only ? L"SPP preflight passed for %zu files.\n" :
+                mode == SPP_RESTORE ? L"Restored %zu SPP files and their permissions.\n" :
+                                     L"Replaced %zu SPP files.\n", plan.count);
+        wprintf(L"  System32: %zu, SysWOW64: %zu, CatRoot: %zu.\n", native_count, wow_count, catalog_count);
+    }
     LocalFree(plan.owner_sid);
     LocalFree(plan.service_sid);
     free(plan.files);
     free(plan.directories);
+    return ok;
+}
+
+static BOOL restore_spp_file(const wchar_t *source, const wchar_t *target, const wchar_t *relative)
+{
+    static const wchar_t native[] = L"Windows\\System32\\";
+    static const wchar_t wow[] = L"Windows\\SysWOW64\\";
+    BOOL is_wow = !_wcsnicmp(relative, wow, sizeof wow / sizeof *wow - 1);
+    if (!is_wow && _wcsnicmp(relative, native, sizeof native / sizeof *native - 1))
+        return FALSE;
+    const wchar_t *name = relative + wcslen(is_wow ? wow : native);
+    const wchar_t *leaf = wcsrchr(name, L'\\');
+    BOOL catalog = !is_wow && !_wcsnicmp(name, L"CatRoot\\", 8) && spp_ext(name, spp_certificates);
+    BOOL spp = leaf ? !_wcsnicmp(name, L"spp\\", 4) : !_wcsnicmp(name, L"spp", 3);
+    if ((!spp && !catalog) || !_wcsicmp(leaf ? leaf + 1 : name, L"sppnp.dll") ||
+        wcspbrk(relative, L":*?/"))
+        return FALSE;
+
+    wchar_t joined[PATH_SIZE], dst[PATH_SIZE], kernel[PATH_SIZE];
+    if (!build_path(joined, target, relative) || !normalize(dst, joined) || wcscmp(joined, dst) ||
+        !_wcsicmp(source, dst) || !spp_path_chain(source, FALSE) ||
+        !spp_path_chain(dst, FALSE) || !build_path(kernel, target, L"Windows\\System32\\ntoskrnl.exe"))
+        return FALSE;
+    WORD machine = spp_pe_machine(kernel);
+    if (!machine || (is_wow && machine != IMAGE_FILE_MACHINE_AMD64))
+        return FALSE;
+    if (is_wow)
+        machine = IMAGE_FILE_MACHINE_I386;
+
+    SppPlan plan = {.mode = SPP_RESTORE};
+    BOOL ok = spp_add_file(&plan, source, dst, catalog, FALSE, machine) && spp_apply(&plan);
+    free(plan.files);
+    if (ok)
+        wprintf(L"Restored %ls and its permissions.\n", dst);
     return ok;
 }
