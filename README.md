@@ -1,4 +1,4 @@
-# FlightPatch v4.4.0
+# FlightPatch v4.5.0
 
 工具在普通 Windows 或 WinPE 命令提示符中运行。它读取 PE 架构、可执行节、函数入口、常量引用和分支结构来定位补丁。命令无需 Build、PDB、预置文件哈希、PowerShell 或联网。匹配失败或系统文件架构冲突时，相关操作停止。
 
@@ -15,6 +15,26 @@ flightpatch.cmd /image W:\ /boot S:\ /recovery R:\
 
 程序检查目标属于离线 Windows。对于明确指定的引导分区，请确认它属于目标系统。外层镜像由 DISM 管理，处理内部 `Winre.wim` 时还需要在本地 NTFS 卷根目录暂存和挂载 WIM 副本。
 
+也可以直接指定 `.wim`。用 `/out` 指定一个尚不存在的输出 WIM，`/index` 选择要处理的索引，默认为 1。工具通过 DISM 处理副本。对于已挂载或已解包的映像，继续用目录路径。
+
+```bat
+flightpatch.cmd /image D:\install.wim /index 4 /out D:\install-patched.wim
+```
+
+### Build 15058 及更新的预览版
+
+`/image`、`/spponly` 和 `/bootwim` 自动读取目标 Build。对 Build 15058 及以上，这些入口只把 `Windows\System32\LicensingUI.exe` 改名为 `LicensingUI.exe.bak`。目标没有此文件时跳过，已有 `.bak` 时保留备份。按新版预览的到期行为，这一步只去除弹窗，水印仍在。新版到期不再沿用旧式 FlightSigned 引导时间炸弹，MMC 和 Windows Defender 到期后仍可能无法运行。
+
+## 处理 boot.wim
+
+`/bootwim` 可直接修改 DISM 挂载或解包得到的目录，也可将 `.wim` 处理成新文件。对低于 15058 的引导映像，检查并处理其中的 CI、Windows 加载器及现有启动管理器文件。直接指定 WIM 时默认处理所有索引，可用 `/index` 单独处理 Windows Setup 或 WinPE 所在的索引。 [DISM 映像管理说明](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/dism-image-management-command-line-options-s14)
+
+```bat
+flightpatch.cmd /bootwim D:\BootMount
+flightpatch.cmd /bootwim D:\sources\boot.wim /out D:\boot-patched.wim
+flightpatch.cmd /bootwim D:\sources\boot.wim /index 2 /out D:\boot-setup-patched.wim
+```
+
 ## 替换 SPP 文件
 
 `/spp` 使用你从正式版提取的文件。可以与 `/image` 一起运行，或通过 `/target` 只替换 SPP 文件。
@@ -22,6 +42,13 @@ flightpatch.cmd /image W:\ /boot S:\ /recovery R:\
 ```bat
 flightpatch.cmd /image W:\ /spp G:\RTM-SPP
 flightpatch.cmd /spp G:\RTM-SPP /target W:\
+```
+
+对只需替换 SPP 的早期 Build，可用 `/spponly` 直接指定目标目录或 WIM。供体仍通过 `/spp` 或 `/spp-reference` 指定。此入口保留引导文件、内核和 WinRE。
+
+```bat
+flightpatch.cmd /spponly D:\Mount /spp G:\RTM-SPP
+flightpatch.cmd /spponly D:\install.wim /index 2 /out D:\install-spp.wim /spp G:\RTM-SPP
 ```
 
 来源目录可直接放 `sppsvc.exe` 等 `spp*` 文件和 `spp` 子目录，也可保留 `System32` 或 `Windows\System32` 这一层。`.cat`、`.cer`、`.crt`、`.der`、`.p7b`、`.p7c` 和 `.sst` 可以平铺在 `sppsvc.exe` 旁，程序会将它们放入目标 `CatRoot\{F750E6C3-38EE-11D1-85E5-00C04FC295EE}` 并保留文件名。若放在来源的 `CatRoot` 子目录，则保留 `CatRoot` 内的相对路径。同一文件只需提供一份。程序跳过 `sppnp.dll`。SPP 文件的所有者设为 `NT SERVICE\TrustedInstaller`，`sppsvc.exe` 和 `spp\store\2.0` 内的文件另外授予 `NT SERVICE\sppsvc` 完全控制。已有 CatRoot 文件保留所有者和 ACL。来源应由用户按目标架构与系统系列选择。 [BetaArchive 原帖](https://www.betaarchive.com/forum/viewtopic.php?t=38947)

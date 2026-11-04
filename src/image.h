@@ -366,7 +366,7 @@ static BOOL offline_winre_install(OfflineWim *wim)
 }
 
 static BOOL patch_offline_image(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root, const wchar_t *boot,
-                                const wchar_t *recovery)
+                                const wchar_t *recovery, BOOL boot_wim)
 {
     wchar_t root_final[OFFLINE_NT_PATH], boot_final[OFFLINE_NT_PATH], live_final[OFFLINE_NT_PATH];
     wchar_t recovery_final[OFFLINE_NT_PATH];
@@ -429,7 +429,7 @@ static BOOL patch_offline_image(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root
             separate_boot |= found;
         }
     }
-    if (ok)
+    if (ok && !boot_wim)
         ok = offline_winre_probe(root, L"Windows\\System32\\Recovery\\Winre.wim", root_final, live_final, wims, &wim_count, &found) &&
              offline_winre_probe(root, L"Recovery\\WindowsRE\\Winre.wim", root_final, live_final, wims, &wim_count, &found);
     if (ok && boot) {
@@ -503,9 +503,9 @@ static BOOL patch_offline_image(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root
     ok = ok && metadata_ok;
     if (ok) {
         wprintf(L"Verified offline updates in %ls.\n", root);
-        if (!wim_count)
+        if (!boot_wim && !wim_count)
             wprintf(L"No Winre.wim found on the supplied volumes.\n");
-        if (!local_boot && !separate_boot)
+        if (!boot_wim && !local_boot && !separate_boot)
             wprintf(L"For an already deployed system, use /boot to include its separate boot volume.\n");
     }
     return ok;

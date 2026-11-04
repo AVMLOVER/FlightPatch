@@ -409,7 +409,7 @@ static BOOL same_directory(const wchar_t *first, const wchar_t *second, BOOL *sa
     return ok;
 }
 
-static BOOL offline_root(const wchar_t *root)
+static BOOL offline_root(const wchar_t *root, BOOL require_hive)
 {
     wchar_t windows[PATH_SIZE], live[PATH_SIZE], hive[PATH_SIZE];
     UINT length = GetSystemWindowsDirectoryW(live, PATH_SIZE);
@@ -418,7 +418,91 @@ static BOOL offline_root(const wchar_t *root)
         !same_directory(windows, live, &same) || same ||
         !build_path(hive, windows, L"System32\\Config\\SYSTEM"))
         return FALSE;
-    return spp_path_type(hive, FALSE, FALSE);
+    return !require_hive || spp_path_type(hive, FALSE, FALSE);
+}
+
+static unsigned image_build(const wchar_t *root, BOOL boot_wim)
+{
+    static const wchar_t *const probes[] = {
+        L"ntoskrnl.exe", L"winload.efi", L"winload.exe", L"Boot\\winload.efi", L"Boot\\winload.exe"
+    };
+    wchar_t system32[PATH_SIZE], path[PATH_SIZE], version[24];
+    if (!build_path(system32, root, L"Windows\\System32") || !spp_path_chain(system32, TRUE))
+        return 0;
+    unsigned count = boot_wim ? sizeof probes / sizeof probes[0] : 1;
+    for (unsigned i = 0; i < count; ++i) {
+        if (!build_path(path, system32, probes[i]) || !spp_path_chain(path, FALSE) ||
+            !spp_path_type(path, FALSE, TRUE))
+            return 0;
+        if (spp_path_type(path, FALSE, FALSE))
+            return spp_kernel_version(path, version, TRUE) ? (unsigned)wcstoul(version, NULL, 10) : 0;
+    }
+    return 0;
+}
+
+static BOOL rename_licensing_ui(const wchar_t *root, unsigned build)
+{
+    wchar_t path[PATH_SIZE], backup[PATH_SIZE];
+    if (!build_path(path, root, L"Windows\\System32\\LicensingUI.exe") ||
+        !build_path(backup, root, L"Windows\\System32\\LicensingUI.exe.bak") ||
+        !spp_path_chain(path, FALSE) || !spp_path_type(path, FALSE, TRUE) ||
+        !spp_path_type(backup, FALSE, TRUE))
+        return FALSE;
+
+    wprintf(L"Build %u: newer preview expiration uses a popup and watermark instead of the legacy FlightSigned restart or boot block.\n"
+            L"Expiry may still prevent MMC and Windows Defender from running. The watermark remains.\n", build);
+    if (!spp_path_type(path, FALSE, FALSE)) {
+        wprintf(spp_path_type(backup, FALSE, FALSE) ? L"LicensingUI.exe is already renamed.\n" :
+                                                   L"LicensingUI.exe is absent. No files changed.\n");
+        return TRUE;
+    }
+    if (spp_path_type(backup, FALSE, FALSE)) {
+        fwprintf(stderr, L"Cannot rename LicensingUI.exe because %ls already exists.\n", backup);
+        return FALSE;
+    }
+    HANDLE file = spp_open(path, DELETE, OPEN_EXISTING);
+    BOOL ok = file != INVALID_HANDLE_VALUE && spp_rename(file, backup);
+    if (!ok)
+        fwprintf(stderr, L"Cannot rename %ls (Win32 %lu).\n", path, GetLastError());
+    if (file != INVALID_HANDLE_VALUE)
+        CloseHandle(file);
+    if (ok)
+        wprintf(L"Renamed LicensingUI.exe to %ls.\n", backup);
+    return ok;
+}
+
+typedef struct {
+    BCRYPT_ALG_HANDLE algorithm;
+    const wchar_t *boot, *recovery, *source;
+    SppMode spp_mode;
+    BOOL patch_boot, boot_wim;
+} ImageOptions;
+
+static BOOL service_image(const wchar_t *root, void *context)
+{
+    const ImageOptions *options = context;
+    unsigned build = image_build(root, options->boot_wim);
+    if (!build) {
+        fwprintf(stderr, L"Cannot determine the Windows build in %ls.\n", root);
+        return FALSE;
+    }
+    if (build >= 15058)
+        return rename_licensing_ui(root, build);
+    if (!options->patch_boot && !options->source) {
+        fwprintf(stderr, L"For builds below 15058, /spponly requires /spp or /spp-reference.\n");
+        return FALSE;
+    }
+    if (options->source && !replace_spp(options->source, root, TRUE, options->spp_mode))
+        return FALSE;
+    if (options->patch_boot &&
+        !patch_offline_image(options->algorithm, root, options->boot, options->recovery, options->boot_wim))
+        return FALSE;
+    if (options->source && !replace_spp(options->source, root, FALSE, options->spp_mode)) {
+        if (options->patch_boot)
+            fwprintf(stderr, L"Offline boot updates completed before SPP failed. The SPP operation can be retried separately.\n");
+        return FALSE;
+    }
+    return TRUE;
 }
 
 static int offline_usage(void)
@@ -426,7 +510,11 @@ static int offline_usage(void)
     fwprintf(stderr, L"Usage: flightpatch /image OFFLINE_ROOT [/boot BOOT_ROOT] [/recovery RECOVERY_ROOT] [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
                      L"       flightpatch {/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT} /target OFFLINE_ROOT\n"
                      L"       flightpatch /spp-restore CLEAN_IMAGE_ROOT /target OFFLINE_ROOT\n"
-                     L"       flightpatch /spp-restore ORIGINAL_FILE /target OFFLINE_ROOT /file WINDOWS_RELATIVE_PATH\n");
+                     L"       flightpatch /spp-restore ORIGINAL_FILE /target OFFLINE_ROOT /file WINDOWS_RELATIVE_PATH\n"
+                     L"       flightpatch /spponly OFFLINE_ROOT [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
+                     L"       flightpatch {/image | /spponly} INPUT_WIM /out OUTPUT_WIM [/index N] [SPP options]\n"
+                     L"       flightpatch /bootwim EXTRACTED_ROOT\n"
+                     L"       flightpatch /bootwim INPUT_WIM /out OUTPUT_WIM [/index N]\n");
     return 2;
 }
 
@@ -434,49 +522,93 @@ static int run_offline(int argc, wchar_t **argv)
 {
     const wchar_t *image_arg = NULL, *boot_arg = NULL, *recovery_arg = NULL;
     const wchar_t *source_arg = NULL, *target_arg = NULL, *file_arg = NULL;
+    const wchar_t *wim_arg = NULL, *output_arg = NULL, *index_arg = NULL, *spponly_arg = NULL;
+    BOOL spponly = FALSE;
     SppMode spp_mode = SPP_RTM;
-    for (int i = 1; i < argc; i += 2) {
-        if (i + 1 >= argc || !argv[i + 1][0] || argv[i + 1][0] == L'/')
+    for (int i = 1; i < argc;) {
+        const wchar_t *option = argv[i++];
+        BOOL has_value = i < argc && argv[i][0] && argv[i][0] != L'/';
+        if (!_wcsicmp(option, L"/spponly")) {
+            if (spponly)
+                return offline_usage();
+            spponly = TRUE;
+            if (has_value)
+                spponly_arg = argv[i++];
+            continue;
+        }
+        if (!has_value)
             return offline_usage();
         const wchar_t **argument;
-        if (!_wcsicmp(argv[i], L"/image"))
+        if (!_wcsicmp(option, L"/image"))
             argument = &image_arg;
-        else if (!_wcsicmp(argv[i], L"/boot"))
+        else if (!_wcsicmp(option, L"/boot"))
             argument = &boot_arg;
-        else if (!_wcsicmp(argv[i], L"/recovery"))
+        else if (!_wcsicmp(option, L"/recovery"))
             argument = &recovery_arg;
-        else if (!_wcsicmp(argv[i], L"/spp") || !_wcsicmp(argv[i], L"/spp-reference") ||
-                 !_wcsicmp(argv[i], L"/spp-restore")) {
+        else if (!_wcsicmp(option, L"/bootwim"))
+            argument = &wim_arg;
+        else if (!_wcsicmp(option, L"/out"))
+            argument = &output_arg;
+        else if (!_wcsicmp(option, L"/index"))
+            argument = &index_arg;
+        else if (!_wcsicmp(option, L"/spp") || !_wcsicmp(option, L"/spp-reference") ||
+                 !_wcsicmp(option, L"/spp-restore")) {
             argument = &source_arg;
-            if (!_wcsicmp(argv[i], L"/spp-restore"))
+            if (!_wcsicmp(option, L"/spp-restore"))
                 spp_mode = SPP_RESTORE;
-            else if (!_wcsicmp(argv[i], L"/spp-reference"))
+            else if (!_wcsicmp(option, L"/spp-reference"))
                 spp_mode = SPP_REFERENCE;
-        }
-        else if (!_wcsicmp(argv[i], L"/target"))
+        } else if (!_wcsicmp(option, L"/target"))
             argument = &target_arg;
-        else if (!_wcsicmp(argv[i], L"/file"))
+        else if (!_wcsicmp(option, L"/file"))
             argument = &file_arg;
         else
             return offline_usage();
         if (*argument)
             return offline_usage();
-        *argument = argv[i + 1];
+        *argument = argv[i++];
     }
-    if ((file_arg && spp_mode != SPP_RESTORE) ||
-        (image_arg && (target_arg || spp_mode == SPP_RESTORE)) ||
-        (!image_arg && (!source_arg || !target_arg || boot_arg || recovery_arg)))
+    BOOL boot_wim = wim_arg != NULL, image = image_arg || spponly_arg;
+    BOOL patch_boot = (image && !spponly) || boot_wim;
+    if ((spponly_arg && image_arg) || (spponly && !image) ||
+        (boot_wim && (image || source_arg || target_arg || boot_arg || recovery_arg || file_arg)) ||
+        (file_arg && spp_mode != SPP_RESTORE) ||
+        (image && (target_arg || spp_mode == SPP_RESTORE)) ||
+        ((!image || spponly) && (boot_arg || recovery_arg)) ||
+        (!image && !boot_wim && (!source_arg || !target_arg)))
         return offline_usage();
 
-    wchar_t target[PATH_SIZE], boot[PATH_SIZE], recovery[PATH_SIZE], source[PATH_SIZE];
-    if (!normalize(target, image_arg ? image_arg : target_arg) ||
+    const wchar_t *input = boot_wim ? wim_arg : image_arg ? image_arg : spponly_arg ? spponly_arg : target_arg;
+    wchar_t target[PATH_SIZE], boot[PATH_SIZE], recovery[PATH_SIZE], source[PATH_SIZE], output[PATH_SIZE];
+    if (!normalize(target, input) ||
         (boot_arg && !normalize(boot, boot_arg)) || (recovery_arg && !normalize(recovery, recovery_arg)) ||
-        (source_arg && !normalize(source, source_arg))) {
+        (source_arg && !normalize(source, source_arg)) || (output_arg && !normalize(output, output_arg))) {
         fwprintf(stderr, L"Use local drive paths under MAX_PATH.\n");
         return 2;
     }
-    if (!offline_root(target)) {
-        fwprintf(stderr, L"Specify an offline Windows partition or a mounted image root containing Windows\\System32\\Config\\SYSTEM.\n");
+    BOOL raw_wim = (image || boot_wim) && spp_ext(target, (const wchar_t *const[]){L".wim", NULL});
+    DWORD first = 1, last = 1;
+    if (raw_wim) {
+        DWORD count = wim_image_count(target);
+        if (!output_arg || boot_arg || recovery_arg)
+            return offline_usage();
+        if (!count) {
+            fwprintf(stderr, L"Cannot read a standalone WIM: %ls.\n", target);
+            return 1;
+        }
+        last = boot_wim ? count : 1;
+        if (index_arg) {
+            wchar_t *end;
+            first = wcstoul(index_arg, &end, 10);
+            if (*end || wcsspn(index_arg, L"0123456789") != wcslen(index_arg) ||
+                !first || first > count || first == MAXDWORD)
+                return offline_usage();
+            last = first;
+        }
+    } else if (output_arg || index_arg) {
+        return offline_usage();
+    } else if (!offline_root(target, !boot_wim)) {
+        fwprintf(stderr, L"Specify an offline Windows root, an extracted boot image, or a WIM with /out.\n");
         return 2;
     }
     if ((in_winpe() && !is_system()) || !enable_privilege(L"SeRestorePrivilege") ||
@@ -490,24 +622,20 @@ static int run_offline(int argc, wchar_t **argv)
         fwprintf(stderr, L"Single-file restore requires an original SPP file and a safe path such as Windows\\System32\\sppc.dll.\n");
         return 1;
     }
+    if (spp_mode == SPP_RESTORE)
+        return replace_spp(source, target, FALSE, spp_mode) ? 0 : 1;
 
     BCRYPT_ALG_HANDLE algorithm;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0) {
         fwprintf(stderr, L"Could not initialize the Windows SHA-256 provider.\n");
         return 1;
     }
-    if (source_arg && !replace_spp(source, target, TRUE, spp_mode)) {
-        BCryptCloseAlgorithmProvider(algorithm, 0);
-        return 1;
-    }
-    BOOL ok = TRUE;
-    if (ok && image_arg)
-        ok = patch_offline_image(algorithm, target, boot_arg ? boot : NULL, recovery_arg ? recovery : NULL);
-    if (ok && source_arg && !replace_spp(source, target, FALSE, spp_mode)) {
-        if (image_arg)
-            fwprintf(stderr, L"Offline boot updates completed before SPP failed. The SPP operation can be retried separately.\n");
-        ok = FALSE;
-    }
+    ImageOptions options = {
+        .algorithm = algorithm, .boot = boot_arg ? boot : NULL, .recovery = recovery_arg ? recovery : NULL,
+        .source = source_arg ? source : NULL, .spp_mode = spp_mode, .patch_boot = patch_boot, .boot_wim = boot_wim
+    };
+    BOOL ok = raw_wim ? edit_wim(target, output, first, last, service_image, &options) :
+                        service_image(target, &options);
     BCryptCloseAlgorithmProvider(algorithm, 0);
     if (!ok)
         privilege_hint();
