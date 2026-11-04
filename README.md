@@ -1,4 +1,4 @@
-# FlightPatch v4.5.0
+# FlightPatch v4.6.0
 
 工具在普通 Windows 或 WinPE 命令提示符中运行。它读取 PE 架构、可执行节、函数入口、常量引用和分支结构来定位补丁。命令无需 Build、PDB、预置文件哈希、PowerShell 或联网。匹配失败或系统文件架构冲突时，相关操作停止。
 
@@ -137,6 +137,18 @@ flightpatch.cmd patch-winre G:\Winre.wim G:\Winre-v3.wim
 工具复制源 WIM，用系统自带的 DISM 挂载副本的索引 1，检查并修改 `ci.dll` 及 `Windows\System32` 和 `Windows\System32\Boot` 中现有的 UEFI 与 Legacy 加载器。保留内核。校验写入内容并提交 WIM 后，才将副本移动到输出路径。源 WIM 保留。已挂载或已提取的 WinRE 可以先用 `flightpatch.cmd check-winre-mount W:\Mount` 只读检查。
 
 修复既有系统时，从其 BCD 的 `recoverysequence` 确认当前使用的 `Winre.wim`，备份后再替换。准备部署镜像时，替换封装源内 `Windows\System32\Recovery\Winre.wim`。外部启动管理器和恢复 BCD 仍由目标虚拟机的启动分区管理。
+
+## 实体机 VHDX 原生启动诊断
+
+实体机原生启动 VHDX 时，先使用实体机 EFI 系统分区上的启动管理器，再读取 BCD 中配置的 VHDX 和 Windows 加载器。在 WinPE 中给实体机实际启动的 ESP 分配盘符，将 VHDX 挂载到另一盘符。下例用 `S:` 表示实体机 ESP，`W:` 表示 VHDX 里的 Windows 分区。 [VHDX 原生启动说明](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/boot-to-vhd--native-boot--add-a-virtual-hard-disk-to-the-boot-menu)
+
+```bat
+flightpatch.cmd check-boot W:\ S:\ > X:\flightpatch-boot.txt 2>&1
+bcdedit /enum firmware /v >> X:\flightpatch-boot.txt 2>&1
+bcdedit /store S:\EFI\Microsoft\Boot\BCD /enum all /v >> X:\flightpatch-boot.txt 2>&1
+```
+
+`check-boot` 输出磁盘上的 SHA-256、版本和已知规则识别结果，所有补丁探测在内存中运行。固件启动项和 BCD 用来确认实际生效的 ESP、EFI 文件，以及 14300 启动项的 `device`、`osdevice` 和 `path`。`0xc0000428` 指向映像签名或哈希验证失败。 [Microsoft 的错误说明](https://learn.microsoft.com/en-us/troubleshoot/azure/virtual-machines/windows/windows-boot-error-invalid-image-hash)
 
 ## VMware 启动设置
 

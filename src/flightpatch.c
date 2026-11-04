@@ -642,10 +642,82 @@ static int run_offline(int argc, wchar_t **argv)
     return ok ? 0 : 1;
 }
 
+static BOOL boot_report_file(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root, const wchar_t *relative,
+                             Role role, BOOL *found)
+{
+    wchar_t path[PATH_SIZE], version[24];
+    *found = FALSE;
+    if (!build_path(path, root, relative) || !spp_path_chain(path, FALSE) ||
+        !spp_path_type(path, FALSE, TRUE)) {
+        fwprintf(stderr, L"Cannot inspect %ls under %ls.\n", relative, root);
+        return FALSE;
+    }
+    if (!spp_path_type(path, FALSE, FALSE)) {
+        wprintf(L"%ls: absent\n", path);
+        return TRUE;
+    }
+    HANDLE file = spp_open(path, GENERIC_READ, OPEN_EXISTING);
+    Output original = {0};
+    BOOL ok = file != INVALID_HANDLE_VALUE && offline_read(file, &original, algorithm);
+    if (file != INVALID_HANDLE_VALUE)
+        CloseHandle(file);
+    if (!ok) {
+        fwprintf(stderr, L"Cannot read %ls.\n", path);
+    } else {
+        *found = TRUE;
+        WORD architecture = spp_pe_machine(path), patched_machine;
+        BOOL changed;
+        wprintf(L"%ls\n  Version: %ls  PE machine: 0x%04X\n  On-disk SHA-256: %hs\n", path,
+                spp_kernel_version(path, version, FALSE) ? version : L"unknown", architecture, original.sha);
+        BOOL recognized = patch_pe(original.data, original.size, role, &patched_machine, &changed);
+        wprintf(L"  FlightPatch: %ls\n", !recognized ? L"no recognized patch structure" :
+                changed ? L"matching rules would change this file" : L"recognized rules already applied");
+    }
+    free(original.data);
+    return ok;
+}
+
+static int check_boot(int argc, wchar_t **argv)
+{
+    wchar_t root[PATH_SIZE], esp[PATH_SIZE];
+    if (argc != 4 || !normalize(root, argv[2]) || !normalize(esp, argv[3]) ||
+        !spp_path_chain(root, TRUE) || !spp_path_chain(esp, TRUE)) {
+        fwprintf(stderr, L"Usage: flightpatch check-boot OFFLINE_WINDOWS_ROOT EFI_SYSTEM_PARTITION\n");
+        return 2;
+    }
+    BCRYPT_ALG_HANDLE algorithm;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+        return 1;
+    static const struct { const wchar_t *path; Role role; BOOL on_esp; } files[] = {
+        {L"Windows\\System32\\winload.efi", LOADER, FALSE},
+        {L"Windows\\System32\\Boot\\winload.efi", LOADER, FALSE},
+        {L"Windows\\Boot\\EFI\\bootmgfw.efi", BOOT, FALSE},
+        {L"EFI\\Microsoft\\Boot\\bootmgfw.efi", BOOT, TRUE},
+        {L"EFI\\Microsoft\\Boot\\bootmgr.efi", BOOT, TRUE},
+        {L"EFI\\Boot\\bootx64.efi", BOOT, TRUE},
+        {L"EFI\\Boot\\bootia32.efi", BOOT, TRUE}
+    };
+    BOOL ok = TRUE, loader = FALSE, manager = FALSE;
+    for (unsigned i = 0; i < sizeof files / sizeof files[0]; ++i) {
+        BOOL found;
+        if (!boot_report_file(algorithm, files[i].on_esp ? esp : root, files[i].path, files[i].role, &found))
+            ok = FALSE;
+        if (i == 0)
+            loader = found;
+        if (files[i].on_esp)
+            manager |= found;
+    }
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    wprintf(L"Read-only report. Verify the active EFI path and VHDX entry separately with BCDEdit.\n");
+    return ok && loader && manager ? 0 : 1;
+}
+
 int wmain(int argc, wchar_t **argv)
 {
     if (argc >= 2 && argv[1][0] == L'/')
         return run_offline(argc, argv);
+    if (argc >= 2 && !_wcsicmp(argv[1], L"check-boot"))
+        return check_boot(argc, argv);
     BOOL hvloader = argc >= 2 && (!_wcsicmp(argv[1], L"check-hvloader") ||
                                   !_wcsicmp(argv[1], L"patch-hvloader"));
     BOOL winre = argc == 4 && !_wcsicmp(argv[1], L"patch-winre");
@@ -664,7 +736,8 @@ int wmain(int argc, wchar_t **argv)
                          L"       flightpatch check-hvloader INPUT_DIR\n"
                          L"       flightpatch patch-hvloader INPUT_DIR NEW_OUTPUT_DIR\n"
                          L"       flightpatch check-winre-mount MOUNT_DIR\n"
-                         L"       flightpatch patch-winre INPUT_WIM NEW_OUTPUT_WIM\n");
+                         L"       flightpatch patch-winre INPUT_WIM NEW_OUTPUT_WIM\n"
+                         L"       flightpatch check-boot OFFLINE_WINDOWS_ROOT EFI_SYSTEM_PARTITION\n");
         return offline_usage();
     }
     if (patch && in_winpe() && !is_system()) {
