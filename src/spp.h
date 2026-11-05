@@ -2,18 +2,20 @@
 #include <sddl.h>
 #include <winver.h>
 
-typedef enum { SPP_RTM, SPP_REFERENCE, SPP_RESTORE } SppMode;
+typedef enum { SPP_RTM, SPP_REFERENCE, SPP_RESTORE, SPP_NT6 } SppMode;
 
 typedef struct {
     wchar_t source[PATH_SIZE], target[PATH_SIZE];
     wchar_t staged[PATH_SIZE], backup[PATH_SIZE];
     wchar_t retired_path[PATH_SIZE], retired_backup[PATH_SIZE];
     BOOL catroot, service, made, saved, installed, retired;
+    PSECURITY_DESCRIPTOR original_acl;
 } SppFile;
 
 typedef struct {
     wchar_t path[PATH_SIZE];
     BOOL service, created;
+    PSECURITY_DESCRIPTOR original_acl;
 } SppDirectory;
 
 typedef struct {
@@ -245,8 +247,9 @@ static BOOL spp_collect(SppPlan *plan, const wchar_t *source, const wchar_t *tar
 {
     static const wchar_t *const licenses[] = {L".xrm-ms", NULL};
     BOOL top = !*relative;
-    BOOL service = !catroot && (!_wcsicmp(relative, L"spp\\store\\2.0") ||
-                                !_wcsnicmp(relative, L"spp\\store\\2.0\\", 14));
+    BOOL service = plan->mode == SPP_NT6 ||
+                   (!catroot && (!_wcsicmp(relative, L"spp\\store\\2.0") ||
+                                 !_wcsnicmp(relative, L"spp\\store\\2.0\\", 14)));
     wchar_t pattern[PATH_SIZE];
     if (!build_path(pattern, source, top ? L"spp*" : L"*"))
         return FALSE;
@@ -263,9 +266,10 @@ static BOOL spp_collect(SppPlan *plan, const wchar_t *source, const wchar_t *tar
         if ((top && (directory || _wcsnicmp(name, L"spp", 3))) ||
             (catroot && !directory && !spp_ext(name, spp_certificates)))
             continue;
-        if (plan->mode != SPP_RESTORE && !catroot && !directory && spp_keep_target(relative, name))
+        if ((plan->mode == SPP_RTM || plan->mode == SPP_REFERENCE) &&
+            !catroot && !directory && spp_keep_target(relative, name))
             continue;
-        if (plan->mode != SPP_RTM &&
+        if ((plan->mode == SPP_REFERENCE || plan->mode == SPP_RESTORE) &&
             ((top && !spp_reference_binary(name)) ||
              (!top && directory && !_wcsicmp(relative, L"spp") && !_wcsicmp(name, L"store")) ||
              (!top && !directory && !spp_ext(name, licenses))))
@@ -279,7 +283,8 @@ static BOOL spp_collect(SppPlan *plan, const wchar_t *source, const wchar_t *tar
         }
         if (directory) {
             size_t old_files = plan->count, old_directories = plan->dir_count;
-            if (plan->mode != SPP_RTM && !_wcsicmp(relative, L"spp\\tokens\\skus") &&
+            if ((plan->mode == SPP_REFERENCE || plan->mode == SPP_RESTORE) &&
+                !_wcsicmp(relative, L"spp\\tokens\\skus") &&
                 !spp_path_type(dst, TRUE, FALSE)) {
                 fwprintf(stderr, L"SPP reference SKU is not present in the target: %ls.\n", dst);
                 ok = FALSE;
@@ -292,7 +297,8 @@ static BOOL spp_collect(SppPlan *plan, const wchar_t *source, const wchar_t *tar
                 ok = FALSE;
                 break;
             }
-            if ((catroot || plan->mode != SPP_RTM) && plan->count == old_files)
+            if ((catroot || plan->mode == SPP_REFERENCE || plan->mode == SPP_RESTORE) &&
+                plan->count == old_files)
                 plan->dir_count = old_directories;
         } else if (!spp_add_file(plan, src, dst, catroot,
                                 service || (top && !_wcsicmp(name, L"sppsvc.exe")), machine)) {
@@ -490,7 +496,7 @@ static DWORD spp_acl(HANDLE file, HANDLE old, const SppPlan *plan, BOOL catroot,
         if (!GetSecurityDescriptorControl(descriptor, &control, &revision))
             error = GetLastError();
         else {
-            if (!catroot && !directory)
+            if (!catroot && !directory && plan->mode != SPP_NT6)
                 owner = plan->owner_sid;
             if (old == INVALID_HANDLE_VALUE)
                 flags = catroot || directory ? 0 : OWNER_SECURITY_INFORMATION;
@@ -602,6 +608,10 @@ static BOOL spp_stage(SppPlan *plan, SppFile *entry)
         entry->made = output != INVALID_HANDLE_VALUE;
         ok = entry->made && spp_copy_verified(source, output);
     }
+    if (ok && plan->mode == SPP_NT6) {
+        FILETIME modified;
+        ok = GetFileTime(source, NULL, NULL, &modified) && SetFileTime(output, NULL, NULL, &modified);
+    }
     if (ok) {
         error = plan->mode == SPP_RESTORE ? spp_restore_metadata(source, output) :
                                           spp_acl(output, old, plan, entry->catroot, entry->service, FALSE);
@@ -668,19 +678,41 @@ static void spp_restore(const wchar_t *backup_path, const wchar_t *target)
 static BOOL spp_apply(SppPlan *plan)
 {
     BOOL ok = TRUE;
+    /* Save the original tree ACLs before adding inheritable service grants. */
+    if (plan->mode == SPP_NT6) {
+        for (size_t i = 0; i < plan->dir_count && ok; ++i) {
+            SppDirectory *entry = &plan->directories[i];
+            DWORD error = GetNamedSecurityInfoW(entry->path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                                                NULL, NULL, NULL, NULL, &entry->original_acl);
+            ok = error == ERROR_SUCCESS || spp_missing(error);
+        }
+        for (size_t i = 0; i < plan->count && ok; ++i) {
+            SppFile *entry = &plan->files[i];
+            DWORD error = GetNamedSecurityInfoW(entry->target, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                                                NULL, NULL, NULL, NULL, &entry->original_acl);
+            ok = error == ERROR_SUCCESS || spp_missing(error);
+        }
+    }
     for (size_t i = 0; i < plan->dir_count && ok; ++i) {
         SppDirectory *entry = &plan->directories[i];
-        if (spp_path_type(entry->path, TRUE, FALSE))
+        BOOL existing = spp_path_type(entry->path, TRUE, FALSE);
+        if (existing && plan->mode != SPP_NT6)
             continue;
-        entry->created = CreateDirectoryW(entry->path, NULL);
-        ok = entry->created;
+        entry->created = !existing && CreateDirectoryW(entry->path, NULL);
+        ok = existing || entry->created;
         if (ok && entry->service) {
             HANDLE directory = spp_open(entry->path, READ_CONTROL | WRITE_OWNER | WRITE_DAC, OPEN_EXISTING);
             ok = directory != INVALID_HANDLE_VALUE;
             if (ok) {
-                ok = spp_acl(directory, INVALID_HANDLE_VALUE, plan, FALSE, entry->service, TRUE) == ERROR_SUCCESS;
-                CloseHandle(directory);
+                if (existing && !entry->original_acl)
+                    ok = GetSecurityInfo(directory, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                                         NULL, NULL, NULL, NULL, &entry->original_acl) == ERROR_SUCCESS;
             }
+            if (ok) {
+                ok = spp_acl(directory, INVALID_HANDLE_VALUE, plan, FALSE, entry->service, TRUE) == ERROR_SUCCESS;
+            }
+            if (directory != INVALID_HANDLE_VALUE)
+                CloseHandle(directory);
         }
         if (!ok)
             fwprintf(stderr, L"Cannot create SPP directory %ls.\n", entry->path);
@@ -719,10 +751,43 @@ static BOOL spp_apply(SppPlan *plan)
         if (entry->made && !entry->installed && !spp_remove(entry->staged))
             fwprintf(stderr, L"Cannot remove staged file %ls.\n", entry->staged);
     }
-    if (!ok) {
-        for (size_t i = plan->dir_count; i > 0; --i)
-            if (plan->directories[i - 1].created)
-                RemoveDirectoryW(plan->directories[i - 1].path);
+    for (size_t i = plan->dir_count; i > 0; --i) {
+        SppDirectory *entry = &plan->directories[i - 1];
+        if (!ok && entry->original_acl) {
+            HANDLE dir = spp_open(entry->path, WRITE_DAC, OPEN_EXISTING);
+            SECURITY_DESCRIPTOR_CONTROL control;
+            DWORD revision;
+            if (dir == INVALID_HANDLE_VALUE ||
+                !GetSecurityDescriptorControl(entry->original_acl, &control, &revision) ||
+                !SetKernelObjectSecurity(dir, DACL_SECURITY_INFORMATION |
+                    ((control & SE_DACL_PROTECTED) ? PROTECTED_DACL_SECURITY_INFORMATION :
+                                                    UNPROTECTED_DACL_SECURITY_INFORMATION), entry->original_acl))
+                fwprintf(stderr, L"Cannot restore directory permissions: %ls.\n", entry->path);
+            if (dir != INVALID_HANDLE_VALUE)
+                CloseHandle(dir);
+        }
+        if (!ok && entry->created)
+            RemoveDirectoryW(entry->path);
+        LocalFree(entry->original_acl);
+        entry->original_acl = NULL;
+    }
+    for (size_t i = 0; i < plan->count; ++i) {
+        SppFile *entry = &plan->files[i];
+        if (!ok && entry->original_acl) {
+            HANDLE file = spp_open(entry->target, WRITE_DAC, OPEN_EXISTING);
+            SECURITY_DESCRIPTOR_CONTROL control;
+            DWORD revision;
+            if (file == INVALID_HANDLE_VALUE ||
+                !GetSecurityDescriptorControl(entry->original_acl, &control, &revision) ||
+                !SetKernelObjectSecurity(file, DACL_SECURITY_INFORMATION |
+                    ((control & SE_DACL_PROTECTED) ? PROTECTED_DACL_SECURITY_INFORMATION :
+                                                    UNPROTECTED_DACL_SECURITY_INFORMATION), entry->original_acl))
+                fwprintf(stderr, L"Cannot restore file permissions: %ls.\n", entry->target);
+            if (file != INVALID_HANDLE_VALUE)
+                CloseHandle(file);
+        }
+        LocalFree(entry->original_acl);
+        entry->original_acl = NULL;
     }
     return ok;
 }

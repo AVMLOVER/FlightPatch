@@ -387,6 +387,7 @@ static BOOL write_output(const wchar_t *output, const Output images[FILE_COUNT],
 #include "winre.h"
 #include "image.h"
 #include "spp.h"
+#include "nt6.h"
 
 static BOOL same_directory(const wchar_t *first, const wchar_t *second, BOOL *same)
 {
@@ -505,16 +506,126 @@ static BOOL service_image(const wchar_t *root, void *context)
     return TRUE;
 }
 
+#include "media.h"
+
+static int help(void)
+{
+    wprintf(L"NT Timebomb Patch 5.0\n\n"
+            L"Use an elevated command prompt for offline servicing. In WinPE use SYSTEM.\n"
+            L"All paths must be local drive paths under MAX_PATH. Quote paths containing spaces.\n\n"
+            L"TOKENS-ONLY MODE\n"
+            L"  nttimebomb /nt6 /file DONOR_FOLDER /target OFFLINE_WINDOWS_ROOT\n"
+            L"Copies only System32\\spp\\tokens from the donor. A donor may be its image root,\n"
+            L"System32 folder, spp folder, or a folder named tokens. Existing extra tokens remain.\n"
+            L"Grants NT SERVICE\\sppsvc full control on the target tokens tree, including existing\n"
+            L"files and folders. This mode never patches CI or boot files and never renames LicensingUI.\n\n"
+            L"COMPLETE INSTALLATION MEDIA\n"
+            L"  nttimebomb /media SOURCE_ISO_OR_FOLDER /work NEW_FOLDER /out NEW_ISO\n"
+            L"    [/oscdimg OSCDIMG_EXE] [/7zip SEVENZIP_EXE] [/spp RTM_FOLDER]\n"
+            L"Copies or extracts the source into a new workspace, services every boot.wim and\n"
+            L"install.wim index, and patches the media-root bootmgr and bootmgr.efi.\n"
+            L"Requires standalone sources\\boot.wim and sources\\install.wim plus BIOS/UEFI\n"
+            L"El Torito files. Split WIMs and install.esd are not accepted. Optional /spp applies\n"
+            L"to install.wim only. OSCDIMG builds a BIOS+UEFI ISO after servicing succeeds.\n"
+            L"Provide OSCDIMG and (for ISO input) 7-Zip beside the executable, in PATH, or explicitly.\n"
+            L"The new workspace remains available for inspection or manual cleanup after any result.\n\n"
+            L"TWO STANDALONE BOOT MANAGERS\n"
+            L"  nttimebomb /bootfiles INPUT_FOLDER /out NEW_FOLDER\n"
+            L"Place bootmgr and bootmgr.efi together in INPUT_FOLDER. Both are verified before\n"
+            L"the patched pair is written to a new folder. Deploy them to the matching media.\n\n"
+            L"EXISTING OFFLINE MODES\n"
+            L"  /image ROOT [/boot ESP] [/recovery ROOT] [/spp DONOR]\n"
+            L"  /spponly ROOT /spp DONOR\n"
+            L"  /bootwim EXTRACTED_ROOT\n"
+            L"  /bootwim INPUT_WIM /out NEW_WIM [/index N]\n"
+            L"Use /out with WIM input. /image defaults to index 1; /bootwim defaults to all indexes.\n"
+            L"For Build >=15058, these image modes only rename LicensingUI.exe to .exe.bak.\n"
+            L"NT6 tokens-only is independent of that build policy. Read README.md for donor\n"
+            L"layouts, SPP exclusions, restore examples, boot diagnostics, and known limitations.\n");
+    return 0;
+}
+
+static int run_new(int argc, wchar_t **argv)
+{
+    BOOL nt6 = FALSE;
+    const wchar_t *donor_arg = NULL, *target_arg = NULL, *media_arg = NULL, *work_arg = NULL;
+    const wchar_t *out_arg = NULL, *root_arg = NULL, *osc_arg = NULL, *zip_arg = NULL, *spp_arg = NULL;
+    for (int i = 1; i < argc;) {
+        const wchar_t *option = argv[i++];
+        if (!_wcsicmp(option, L"/nt6")) {
+            if (nt6)
+                return 2;
+            nt6 = TRUE;
+            continue;
+        }
+        if (i == argc || !argv[i][0] || argv[i][0] == L'/')
+            return 2;
+        const wchar_t **slot;
+        if (!_wcsicmp(option, L"/file"))
+            slot = &donor_arg;
+        else if (!_wcsicmp(option, L"/target"))
+            slot = &target_arg;
+        else if (!_wcsicmp(option, L"/media"))
+            slot = &media_arg;
+        else if (!_wcsicmp(option, L"/work"))
+            slot = &work_arg;
+        else if (!_wcsicmp(option, L"/out"))
+            slot = &out_arg;
+        else if (!_wcsicmp(option, L"/bootfiles"))
+            slot = &root_arg;
+        else if (!_wcsicmp(option, L"/oscdimg"))
+            slot = &osc_arg;
+        else if (!_wcsicmp(option, L"/7zip"))
+            slot = &zip_arg;
+        else if (!_wcsicmp(option, L"/spp"))
+            slot = &spp_arg;
+        else
+            return 2;
+        if (*slot)
+            return 2;
+        *slot = argv[i++];
+    }
+    if (nt6 && (!donor_arg || !target_arg || media_arg || root_arg || out_arg || work_arg || osc_arg || zip_arg || spp_arg))
+        return 2;
+    if (!nt6 && (donor_arg || target_arg || (!!media_arg == !!root_arg) || !out_arg ||
+        (media_arg && !work_arg) || (root_arg && (work_arg || osc_arg || zip_arg || spp_arg))))
+        return 2;
+    wchar_t source[PATH_SIZE], target[PATH_SIZE], work[PATH_SIZE], output[PATH_SIZE], spp[PATH_SIZE];
+    if (!normalize(source, nt6 ? donor_arg : media_arg ? media_arg : root_arg) ||
+        (target_arg && !normalize(target, target_arg)) ||
+        (work_arg && !normalize(work, work_arg)) || (out_arg && !normalize(output, out_arg)) ||
+        (spp_arg && !normalize(spp, spp_arg)))
+        return 2;
+    if ((nt6 && !offline_root(target, TRUE)) ||
+        !spp_path_chain(source, nt6 || root_arg || !spp_ext(source, (const wchar_t *const[]){L".iso", NULL})))
+        return 2;
+    if ((in_winpe() && !is_system()) || !enable_privilege(L"SeBackupPrivilege") ||
+        !enable_privilege(L"SeRestorePrivilege")) {
+        privilege_hint();
+        return 3;
+    }
+    if (nt6)
+        return replace_nt6_tokens(source, target) ? 0 : 1;
+    BCRYPT_ALG_HANDLE algorithm;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+        return 1;
+    ImageOptions options = {.algorithm = algorithm, .patch_boot = TRUE, .source = spp_arg ? spp : NULL};
+    BOOL ok = media_arg ? service_media(source, work, output, osc_arg, zip_arg, &options) :
+                          root_boot_files(algorithm, source, output);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    return ok ? 0 : 1;
+}
+
 static int offline_usage(void)
 {
-    fwprintf(stderr, L"Usage: flightpatch /image OFFLINE_ROOT [/boot BOOT_ROOT] [/recovery RECOVERY_ROOT] [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
-                     L"       flightpatch {/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT} /target OFFLINE_ROOT\n"
-                     L"       flightpatch /spp-restore CLEAN_IMAGE_ROOT /target OFFLINE_ROOT\n"
-                     L"       flightpatch /spp-restore ORIGINAL_FILE /target OFFLINE_ROOT /file WINDOWS_RELATIVE_PATH\n"
-                     L"       flightpatch /spponly OFFLINE_ROOT [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
-                     L"       flightpatch {/image | /spponly} INPUT_WIM /out OUTPUT_WIM [/index N] [SPP options]\n"
-                     L"       flightpatch /bootwim EXTRACTED_ROOT\n"
-                     L"       flightpatch /bootwim INPUT_WIM /out OUTPUT_WIM [/index N]\n");
+    fwprintf(stderr, L"Usage: nttimebomb /image OFFLINE_ROOT [/boot BOOT_ROOT] [/recovery RECOVERY_ROOT] [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
+                     L"       nttimebomb {/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT} /target OFFLINE_ROOT\n"
+                     L"       nttimebomb /spp-restore CLEAN_IMAGE_ROOT /target OFFLINE_ROOT\n"
+                     L"       nttimebomb /spp-restore ORIGINAL_FILE /target OFFLINE_ROOT /file WINDOWS_RELATIVE_PATH\n"
+                     L"       nttimebomb /spponly OFFLINE_ROOT [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
+                     L"       nttimebomb {/image | /spponly} INPUT_WIM /out OUTPUT_WIM [/index N] [SPP options]\n"
+                     L"       nttimebomb /bootwim EXTRACTED_ROOT\n"
+                     L"       nttimebomb /bootwim INPUT_WIM /out OUTPUT_WIM [/index N]\n");
     return 2;
 }
 
@@ -670,7 +781,7 @@ static BOOL boot_report_file(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root, c
         wprintf(L"%ls\n  Version: %ls  PE machine: 0x%04X\n  On-disk SHA-256: %hs\n", path,
                 spp_kernel_version(path, version, FALSE) ? version : L"unknown", architecture, original.sha);
         BOOL recognized = patch_pe(original.data, original.size, role, &patched_machine, &changed);
-        wprintf(L"  FlightPatch: %ls\n", !recognized ? L"no recognized patch structure" :
+        wprintf(L"  NT Timebomb Patch: %ls\n", !recognized ? L"no recognized patch structure" :
                 changed ? L"matching rules would change this file" : L"recognized rules already applied");
     }
     free(original.data);
@@ -682,7 +793,7 @@ static int check_boot(int argc, wchar_t **argv)
     wchar_t root[PATH_SIZE], esp[PATH_SIZE];
     if (argc != 4 || !normalize(root, argv[2]) || !normalize(esp, argv[3]) ||
         !spp_path_chain(root, TRUE) || !spp_path_chain(esp, TRUE)) {
-        fwprintf(stderr, L"Usage: flightpatch check-boot OFFLINE_WINDOWS_ROOT EFI_SYSTEM_PARTITION\n");
+        fwprintf(stderr, L"Usage: nttimebomb check-boot OFFLINE_WINDOWS_ROOT EFI_SYSTEM_PARTITION\n");
         return 2;
     }
     BCRYPT_ALG_HANDLE algorithm;
@@ -714,6 +825,16 @@ static int check_boot(int argc, wchar_t **argv)
 
 int wmain(int argc, wchar_t **argv)
 {
+    if (argc == 1 || (argc == 2 && (!_wcsicmp(argv[1], L"/?") || !_wcsicmp(argv[1], L"/help") ||
+                                   !_wcsicmp(argv[1], L"--help"))))
+        return help();
+    for (int i = 1; i < argc; ++i)
+        if (!_wcsicmp(argv[i], L"/nt6") || !_wcsicmp(argv[i], L"/media") || !_wcsicmp(argv[i], L"/bootfiles")) {
+            int result = run_new(argc, argv);
+            if (result == 2)
+                fwprintf(stderr, L"Invalid arguments. Run nttimebomb /help for detailed instructions.\n");
+            return result;
+        }
     if (argc >= 2 && argv[1][0] == L'/')
         return run_offline(argc, argv);
     if (argc >= 2 && !_wcsicmp(argv[1], L"check-boot"))
@@ -731,13 +852,13 @@ int wmain(int argc, wchar_t **argv)
                               !_wcsicmp(argv[1], L"check-image") ||
                               !_wcsicmp(argv[1], L"check-hvloader") || winre_check);
     if (!patch && !check) {
-        fwprintf(stderr, L"Usage: flightpatch check[-image] INPUT_DIR\n"
-                         L"       flightpatch patch[-image] INPUT_DIR NEW_OUTPUT_DIR\n"
-                         L"       flightpatch check-hvloader INPUT_DIR\n"
-                         L"       flightpatch patch-hvloader INPUT_DIR NEW_OUTPUT_DIR\n"
-                         L"       flightpatch check-winre-mount MOUNT_DIR\n"
-                         L"       flightpatch patch-winre INPUT_WIM NEW_OUTPUT_WIM\n"
-                         L"       flightpatch check-boot OFFLINE_WINDOWS_ROOT EFI_SYSTEM_PARTITION\n");
+        fwprintf(stderr, L"Usage: nttimebomb check[-image] INPUT_DIR\n"
+                         L"       nttimebomb patch[-image] INPUT_DIR NEW_OUTPUT_DIR\n"
+                         L"       nttimebomb check-hvloader INPUT_DIR\n"
+                         L"       nttimebomb patch-hvloader INPUT_DIR NEW_OUTPUT_DIR\n"
+                         L"       nttimebomb check-winre-mount MOUNT_DIR\n"
+                         L"       nttimebomb patch-winre INPUT_WIM NEW_OUTPUT_WIM\n"
+                         L"       nttimebomb check-boot OFFLINE_WINDOWS_ROOT EFI_SYSTEM_PARTITION\n");
         return offline_usage();
     }
     if (patch && in_winpe() && !is_system()) {
