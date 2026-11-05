@@ -1,6 +1,6 @@
-# NT Timebomb Patch 5.0.1
+# NT Timebomb Patch 5.0.2
 
-NT Timebomb Patch is an offline command-line tool for Windows prerelease images. It replaces NT6 licensing tokens, services older FlightSigned boot files, processes installation media, and rebuilds BIOS/UEFI ISOs with Microsoft OSCDIMG. The former FlightPatch command name remains available as a compatibility launcher.
+NT Timebomb Patch is an offline command-line tool for Windows prerelease images. It replaces NT6 licensing tokens and optional Branding, services older FlightSigned boot files, processes installation media, and rebuilds BIOS/UEFI ISOs with Microsoft OSCDIMG. The former FlightPatch command name remains available as a compatibility launcher.
 
 ## Requirements and permissions
 
@@ -16,18 +16,28 @@ nttimebomb.cmd /help
 
 WIM servicing uses Windows DISM. ISO creation requires OSCDIMG from the Microsoft Windows ADK. ISO input additionally requires 7z.exe and its runtime files from 7-Zip. Place dependencies beside the executable, add them to PATH, or specify /oscdimg and /7zip. Only ISO extraction requires 7-Zip. Only ISO creation requires OSCDIMG.
 
-## NT6 tokens-only replacement
+## NT6 tokens and optional Branding
 
-Use /nt6 when only the SPP tokens tree should be replaced. /file identifies the donor folder. /target identifies an offline Windows root containing Windows\System32\Config\SYSTEM.
+Use /nt6 to replace the SPP tokens tree, with optional Branding detected automatically. /file identifies the donor folder. /target identifies an offline Windows root containing Windows\System32\Config\SYSTEM.
 
 ~~~bat
 nttimebomb.cmd /nt6 /file D:\Donor /target W:\
 flightpatch.cmd /nt6 /file "D:\Donor\Windows\System32\spp\tokens" /target D:\Mount
 ~~~
 
-The donor may contain Windows\System32\spp\tokens, System32\spp\tokens, spp\tokens, or tokens. You may also point directly to a directory named tokens. Supply one unambiguous tokens tree. A complete donor image is accepted, but only its System32 SPP tokens are copied.
+The donor may contain Windows\System32\spp\tokens, System32\spp\tokens, spp\tokens, or tokens. You may also point directly to a directory named tokens. Supply one unambiguous tokens tree.
 
-This mode writes only inside the target Windows\System32\spp\tokens. Matching files are replaced. Target-only tokens remain. NT SERVICE\sppsvc receives Full Control on the tokens directory, every subdirectory, and every file, including target-only items. Other existing access rules and target owners are retained. The grant applies to the tokens tree.
+Tokens are written into target Windows\System32\spp\tokens. Matching files are replaced. Target-only tokens remain. NT SERVICE\sppsvc receives Full Control on the tokens directory, every subdirectory, and every file, including target-only items. Other existing access rules and target owners are retained.
+
+If the directory supplied to /file also contains Branding, the tool automatically copies its contents to target Windows\Branding. A complete image donor may provide Windows\Branding instead. Supply only one of those layouts. Every target Branding folder and file receives NT SERVICE\TrustedInstaller Full Control, including inheritance for new children. Matching files are replaced and target-only files remain. Existing owners are retained. When no Branding directory is supplied, this step is skipped.
+
+For example, D:\Donor\spp\tokens and D:\Donor\Branding can be provided together. There is no separate Branding switch.
+
+~~~bat
+nttimebomb.cmd /nt6 /file D:\Donor /target D:\Mount
+~~~
+
+The same automatic detection applies to /media ... /nt6 D:\Donor in every install.wim index. Tokens and Branding are staged together, so a failure in either tree triggers rollback of both files and permissions.
 
 NT6 mode does not replace SPP binaries, CatRoot, the store database, or SysWOW64. It does not patch CI, boot managers, loaders, or kernels, and never renames LicensingUI, regardless of the target build. Supply tokens appropriate for your target. Files are staged and verified before publication. On failure the tool attempts to restore original files and directory permissions.
 
@@ -49,7 +59,7 @@ nttimebomb.cmd /media D:\Preview.iso /work D:\SPP-Work /out D:\Preview-spp.iso /
 nttimebomb.cmd /media D:\Preview.iso /work D:\Tokens-Work /out D:\Preview-tokens.iso /nt6 D:\Donor\spp /oscdimg C:\Tools\oscdimg.exe /7zip C:\Tools\7z.exe
 ~~~
 
-Both combinations service every install.wim index and rebuild the ISO. /spponly uses standard SPP replacement, including its SysWOW64 handling, CatRoot rules and exclusions. /nt6 copies only the System32 SPP tokens tree and grants SPPSVC access. Both preserve boot.wim, root boot managers, CI, loaders, kernels and LicensingUI. These explicit media replacement modes bypass the Build 15058 popup policy. The original /media /spp combination still performs the full boot-patching workflow.
+Both combinations service every install.wim index and rebuild the ISO. /spponly uses standard SPP replacement, including its SysWOW64 handling, CatRoot rules and exclusions. /nt6 copies System32 SPP tokens with SPPSVC access and automatically applies optional Branding with TrustedInstaller access. Both preserve boot.wim, root boot managers, CI, loaders, kernels and LicensingUI. These explicit media replacement modes bypass the Build 15058 popup policy. The original /media /spp combination still performs the full boot-patching workflow.
 
 The tool performs the following operations.
 

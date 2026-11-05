@@ -8,13 +8,13 @@ typedef struct {
     wchar_t source[PATH_SIZE], target[PATH_SIZE];
     wchar_t staged[PATH_SIZE], backup[PATH_SIZE];
     wchar_t retired_path[PATH_SIZE], retired_backup[PATH_SIZE];
-    BOOL catroot, service, made, saved, installed, retired;
+    BOOL catroot, service, trustedinstaller, made, saved, installed, retired;
     PSECURITY_DESCRIPTOR original_acl;
 } SppFile;
 
 typedef struct {
     wchar_t path[PATH_SIZE];
-    BOOL service, created;
+    BOOL service, trustedinstaller, created;
     PSECURITY_DESCRIPTOR original_acl;
 } SppDirectory;
 
@@ -263,6 +263,9 @@ static BOOL spp_collect(SppPlan *plan, const wchar_t *source, const wchar_t *tar
         BOOL directory = !!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
         if (!wcscmp(name, L".") || !wcscmp(name, L"..") || !_wcsicmp(name, L"sppnp.dll"))
             continue;
+        if (plan->mode == SPP_NT6 && directory && !_wcsicmp(relative, L"spp\\tokens") &&
+            !_wcsicmp(name, L"Branding"))
+            continue;
         if ((top && (directory || _wcsnicmp(name, L"spp", 3))) ||
             (catroot && !directory && !spp_ext(name, spp_certificates)))
             continue;
@@ -471,7 +474,7 @@ static BOOL spp_plan_old_catalogs(SppPlan *plan, const wchar_t *kernel)
 
 /* Reuse the destination ACL and grant the service access on the specified paths. */
 static DWORD spp_acl(HANDLE file, HANDLE old, const SppPlan *plan, BOOL catroot,
-                     BOOL service, BOOL directory)
+                     BOOL service, BOOL directory, BOOL trustedinstaller)
 {
     PSECURITY_DESCRIPTOR descriptor = NULL;
     PACL dacl = NULL, new_dacl = NULL;
@@ -485,7 +488,7 @@ static DWORD spp_acl(HANDLE file, HANDLE old, const SppPlan *plan, BOOL catroot,
             .grfAccessMode = SET_ACCESS,
             .grfInheritance = directory ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE
         };
-        BuildTrusteeWithSidW(&entry.Trustee, plan->service_sid);
+        BuildTrusteeWithSidW(&entry.Trustee, trustedinstaller ? plan->owner_sid : plan->service_sid);
         error = SetEntriesInAclW(1, &entry, dacl, &new_dacl);
         if (error == ERROR_SUCCESS)
             dacl = new_dacl;
@@ -614,7 +617,8 @@ static BOOL spp_stage(SppPlan *plan, SppFile *entry)
     }
     if (ok) {
         error = plan->mode == SPP_RESTORE ? spp_restore_metadata(source, output) :
-                                          spp_acl(output, old, plan, entry->catroot, entry->service, FALSE);
+                                          spp_acl(output, old, plan, entry->catroot, entry->service,
+                                                  FALSE, entry->trustedinstaller);
         ok = error == ERROR_SUCCESS;
     } else {
         error = GetLastError();
@@ -709,7 +713,8 @@ static BOOL spp_apply(SppPlan *plan)
                                          NULL, NULL, NULL, NULL, &entry->original_acl) == ERROR_SUCCESS;
             }
             if (ok) {
-                ok = spp_acl(directory, INVALID_HANDLE_VALUE, plan, FALSE, entry->service, TRUE) == ERROR_SUCCESS;
+                ok = spp_acl(directory, INVALID_HANDLE_VALUE, plan, FALSE, entry->service,
+                             TRUE, entry->trustedinstaller) == ERROR_SUCCESS;
             }
             if (directory != INVALID_HANDLE_VALUE)
                 CloseHandle(directory);

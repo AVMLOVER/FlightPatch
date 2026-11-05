@@ -222,7 +222,7 @@ static BOOL service_media(const wchar_t *source, const wchar_t *work, const wcha
     }
     wprintf(L"Completed %ls. ISO: %ls\n", mode == MEDIA_PATCH ?
             L"all boot.wim/install.wim indexes and media boot files" :
-            mode == MEDIA_NT6 ? L"tokens-only updates in all install.wim indexes" :
+            mode == MEDIA_NT6 ? L"NT6 updates in all install.wim indexes" :
                                L"SPP-only updates in all install.wim indexes", output);
     return TRUE;
 }
