@@ -1,4 +1,4 @@
-# NT Timebomb Patch 5.0
+# NT Timebomb Patch 5.0.1
 
 NT Timebomb Patch is an offline command-line tool for Windows prerelease images. It replaces NT6 licensing tokens, services older FlightSigned boot files, processes installation media, and rebuilds BIOS/UEFI ISOs with Microsoft OSCDIMG. The former FlightPatch command name remains available as a compatibility launcher.
 
@@ -42,6 +42,15 @@ nttimebomb.cmd /media D:\ExtractedDVD /work D:\NTTP-Work2 /out D:\Preview-patche
 
 Both /work and /out must be new paths. Keep them outside the source directory, and keep the output outside the workspace. The source is preserved. Allow enough local NTFS space for the media copy, DISM staging, and output ISO.
 
+For replacement-only media processing, provide the donor immediately after /spponly or /nt6. These options are mutually exclusive with each other and with /spp.
+
+~~~bat
+nttimebomb.cmd /media D:\Preview.iso /work D:\SPP-Work /out D:\Preview-spp.iso /spponly D:\RTM-SPP /oscdimg C:\Tools\oscdimg.exe /7zip C:\Tools\7z.exe
+nttimebomb.cmd /media D:\Preview.iso /work D:\Tokens-Work /out D:\Preview-tokens.iso /nt6 D:\Donor\spp /oscdimg C:\Tools\oscdimg.exe /7zip C:\Tools\7z.exe
+~~~
+
+Both combinations service every install.wim index and rebuild the ISO. /spponly uses standard SPP replacement, including its SysWOW64 handling, CatRoot rules and exclusions. /nt6 copies only the System32 SPP tokens tree and grants SPPSVC access. Both preserve boot.wim, root boot managers, CI, loaders, kernels and LicensingUI. These explicit media replacement modes bypass the Build 15058 popup policy. The original /media /spp combination still performs the full boot-patching workflow.
+
 The tool performs the following operations.
 
 1. Extract the ISO with 7-Zip, or copy the media tree to the private workspace.
@@ -74,9 +83,43 @@ nttimebomb.cmd /image D:\install.wim /index 4 /out D:\install-patched.wim
 
 WIM input requires a new /out path. /image defaults to index 1. Use /media for all installation indexes. Supported earlier files are identified using PE structure and code patterns. The existing matcher does not require a build number or PDB.
 
+### Use /image with /spp for older preview expiration
+
+For an older supported FlightSigned build, combine /image with /spp when you want the normal offline boot-expiration patches and the replacement SPP files in the same operation. /image selects the target Windows installation. /spp selects your separately prepared donor files. It does not name a temporary directory or the destination.
+
+Prepare a donor from the appropriate released Windows version and architecture. A flat example has D:\RTM-SPP\sppsvc.exe, the other selected spp* binaries, D:\RTM-SPP\spp, and selected CatRoot certificates or catalogs. For an x64 target, add the corresponding x86 files under D:\RTM-SPP\SysWOW64. The standard SPP exclusions listed below still apply.
+
+To modify an existing install.wim, first identify its indexes and mount the edition you want. The mount directory must be empty. Run these commands from the privileged command prompt described above.
+
+~~~bat
+dism /Get-ImageInfo /ImageFile:D:\install.wim
+mkdir D:\Mount
+dism /Mount-Image /ImageFile:D:\install.wim /Index:1 /MountDir:D:\Mount
+nttimebomb.cmd /image D:\Mount /spp D:\RTM-SPP
+dism /Unmount-Image /MountDir:D:\Mount /Commit
+~~~
+
+Replace index 1 with the desired edition. Check that NT Timebomb Patch reports success before committing. If it fails, inspect its output before deciding whether to retry or discard the mounted image. The tool validates the SPP donor first, processes the older image's boot and recovery files, and then applies standard SPP replacement. If the final SPP step fails after boot processing, its output says so, and you can retry the SPP operation.
+
+You can instead let the tool mount a private WIM copy and create a new output file. The source WIM is retained, and a successful command has already committed the selected output index.
+
+~~~bat
+nttimebomb.cmd /image D:\install.wim /index 1 /out D:\install-patched.wim /spp D:\RTM-SPP
+~~~
+
+For an already deployed offline system, identify its Windows volume and its actual EFI or Legacy system partition. In the following example, W: contains the target Windows directory and S: is that system's boot partition.
+
+~~~bat
+nttimebomb.cmd /image W:\ /boot S:\ /spp D:\RTM-SPP
+~~~
+
+Add /recovery R:\ when the target WinRE is on a separate recovery volume. Main-system and WinRE kernels are retained by /image. The result must still be tested with the boot manager actually selected by firmware. In particular, a VHDX can use the physical machine's ESP rather than the boot files inside the VHDX.
+
+For complete installation media and all install.wim editions, use /media with /spp and an appropriate donor. That combination performs the full older boot-patching workflow. The /media /spponly and /media /nt6 combinations perform replacement-only experiments instead.
+
 ### Build 15058 and newer
 
-For /image, /spponly, /bootwim, and WIM images inside /media, Build 15058 or newer uses a separate policy. Only Windows\System32\LicensingUI.exe is renamed to LicensingUI.exe.bak, when present. Existing backups are preserved. Newer media-root boot managers are retained. This addresses the popup. The watermark remains, and MMC or Windows Defender can still be affected after expiration. NT6 tokens-only is independent of this policy.
+For /image, standalone /spponly, /bootwim, and the full-patching /media workflow, Build 15058 or newer uses a separate policy. Only Windows\System32\LicensingUI.exe is renamed to LicensingUI.exe.bak, when present. Existing backups are preserved. Newer media-root boot managers are retained. This addresses the popup. The watermark remains, and MMC or Windows Defender can still be affected after expiration. NT6 and the two replacement-only media modes operate independently of this policy.
 
 ## Standard SPP replacement
 

@@ -510,7 +510,7 @@ static BOOL service_image(const wchar_t *root, void *context)
 
 static int help(void)
 {
-    wprintf(L"NT Timebomb Patch 5.0\n\n"
+    wprintf(L"NT Timebomb Patch 5.0.1\n\n"
             L"Use an elevated command prompt for offline servicing. In WinPE use SYSTEM.\n"
             L"All paths must be local drive paths under MAX_PATH. Quote paths containing spaces.\n\n"
             L"TOKENS-ONLY MODE\n"
@@ -522,6 +522,10 @@ static int help(void)
             L"COMPLETE INSTALLATION MEDIA\n"
             L"  nttimebomb /media SOURCE_ISO_OR_FOLDER /work NEW_FOLDER /out NEW_ISO\n"
             L"    [/oscdimg OSCDIMG_EXE] [/7zip SEVENZIP_EXE] [/spp RTM_FOLDER]\n"
+            L"  nttimebomb /media SOURCE /work NEW_FOLDER /out NEW_ISO /spponly RTM_FOLDER\n"
+            L"  nttimebomb /media SOURCE /work NEW_FOLDER /out NEW_ISO /nt6 TOKENS_DONOR\n"
+            L"With /spponly or /nt6, only all install.wim indexes are serviced. boot.wim and\n"
+            L"media-root boot files are preserved. These explicit modes do not rename LicensingUI.\n"
             L"Copies or extracts the source into a new workspace, services every boot.wim and\n"
             L"install.wim index, and patches the media-root bootmgr and bootmgr.efi.\n"
             L"Requires standalone sources\\boot.wim and sources\\install.wim plus BIOS/UEFI\n"
@@ -550,12 +554,18 @@ static int run_new(int argc, wchar_t **argv)
     BOOL nt6 = FALSE;
     const wchar_t *donor_arg = NULL, *target_arg = NULL, *media_arg = NULL, *work_arg = NULL;
     const wchar_t *out_arg = NULL, *root_arg = NULL, *osc_arg = NULL, *zip_arg = NULL, *spp_arg = NULL;
+    const wchar_t *spponly_arg = NULL;
     for (int i = 1; i < argc;) {
         const wchar_t *option = argv[i++];
         if (!_wcsicmp(option, L"/nt6")) {
             if (nt6)
                 return 2;
             nt6 = TRUE;
+            if (i < argc && argv[i][0] && argv[i][0] != L'/') {
+                if (donor_arg)
+                    return 2;
+                donor_arg = argv[i++];
+            }
             continue;
         }
         if (i == argc || !argv[i][0] || argv[i][0] == L'/')
@@ -579,38 +589,45 @@ static int run_new(int argc, wchar_t **argv)
             slot = &zip_arg;
         else if (!_wcsicmp(option, L"/spp"))
             slot = &spp_arg;
+        else if (!_wcsicmp(option, L"/spponly"))
+            slot = &spponly_arg;
         else
             return 2;
         if (*slot)
             return 2;
         *slot = argv[i++];
     }
-    if (nt6 && (!donor_arg || !target_arg || media_arg || root_arg || out_arg || work_arg || osc_arg || zip_arg || spp_arg))
+    if (nt6 && (!donor_arg || root_arg || spp_arg || spponly_arg ||
+        (media_arg ? target_arg || !work_arg || !out_arg : !target_arg || work_arg || out_arg || osc_arg || zip_arg)))
         return 2;
     if (!nt6 && (donor_arg || target_arg || (!!media_arg == !!root_arg) || !out_arg ||
-        (media_arg && !work_arg) || (root_arg && (work_arg || osc_arg || zip_arg || spp_arg))))
+        (spp_arg && spponly_arg) || (media_arg && !work_arg) ||
+        (root_arg && (work_arg || osc_arg || zip_arg || spp_arg || spponly_arg))))
         return 2;
+    BOOL nt6_target = nt6 && !media_arg;
+    const wchar_t *media_donor = nt6 ? donor_arg : spponly_arg ? spponly_arg : spp_arg;
     wchar_t source[PATH_SIZE], target[PATH_SIZE], work[PATH_SIZE], output[PATH_SIZE], spp[PATH_SIZE];
-    if (!normalize(source, nt6 ? donor_arg : media_arg ? media_arg : root_arg) ||
+    if (!normalize(source, nt6_target ? donor_arg : media_arg ? media_arg : root_arg) ||
         (target_arg && !normalize(target, target_arg)) ||
         (work_arg && !normalize(work, work_arg)) || (out_arg && !normalize(output, out_arg)) ||
-        (spp_arg && !normalize(spp, spp_arg)))
+        (media_donor && !normalize(spp, media_donor)))
         return 2;
-    if ((nt6 && !offline_root(target, TRUE)) ||
-        !spp_path_chain(source, nt6 || root_arg || !spp_ext(source, (const wchar_t *const[]){L".iso", NULL})))
+    if ((nt6_target && !offline_root(target, TRUE)) ||
+        !spp_path_chain(source, nt6_target || root_arg || !spp_ext(source, (const wchar_t *const[]){L".iso", NULL})))
         return 2;
     if ((in_winpe() && !is_system()) || !enable_privilege(L"SeBackupPrivilege") ||
         !enable_privilege(L"SeRestorePrivilege")) {
         privilege_hint();
         return 3;
     }
-    if (nt6)
+    if (nt6_target)
         return replace_nt6_tokens(source, target) ? 0 : 1;
     BCRYPT_ALG_HANDLE algorithm;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
         return 1;
-    ImageOptions options = {.algorithm = algorithm, .patch_boot = TRUE, .source = spp_arg ? spp : NULL};
-    BOOL ok = media_arg ? service_media(source, work, output, osc_arg, zip_arg, &options) :
+    MediaMode mode = nt6 ? MEDIA_NT6 : spponly_arg ? MEDIA_SPP_ONLY : MEDIA_PATCH;
+    ImageOptions options = {.algorithm = algorithm, .patch_boot = TRUE, .source = media_donor ? spp : NULL};
+    BOOL ok = media_arg ? service_media(source, work, output, osc_arg, zip_arg, &options, mode) :
                           root_boot_files(algorithm, source, output);
     BCryptCloseAlgorithmProvider(algorithm, 0);
     return ok ? 0 : 1;

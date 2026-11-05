@@ -136,9 +136,27 @@ static BOOL build_media_iso(const wchar_t *oscdimg, const wchar_t *work,
     return ok && MoveFileExW(partial, output, MOVEFILE_WRITE_THROUGH);
 }
 
+typedef enum { MEDIA_PATCH, MEDIA_SPP_ONLY, MEDIA_NT6 } MediaMode;
+
+typedef struct {
+    ImageOptions *options;
+    MediaMode mode;
+} MediaInstall;
+
+static BOOL service_media_install(const wchar_t *mount, void *context)
+{
+    MediaInstall *install = context;
+    ImageOptions *options = install->options;
+    if (install->mode == MEDIA_NT6)
+        return replace_nt6_tokens(options->source, mount);
+    if (install->mode == MEDIA_SPP_ONLY)
+        return replace_spp(options->source, mount, FALSE, SPP_RTM);
+    return service_image(mount, options);
+}
+
 static BOOL service_media(const wchar_t *source, const wchar_t *work, const wchar_t *output,
                           const wchar_t *oscdimg_option, const wchar_t *sevenzip_option,
-                          ImageOptions *options)
+                          ImageOptions *options, MediaMode mode)
 {
     wchar_t oscdimg[PATH_SIZE], sevenzip[PATH_SIZE], command[8 * PATH_SIZE];
     wchar_t staged[PATH_SIZE], bootsector[PATH_SIZE], efi[PATH_SIZE], partial[PATH_SIZE];
@@ -171,7 +189,8 @@ static BOOL service_media(const wchar_t *source, const wchar_t *work, const wcha
         ok = build_path(bootsector, work, L"boot\\etfsboot.com") &&
              build_path(efi, work, L"efi\\microsoft\\boot\\efisys.bin") &&
              spp_path_type(bootsector, FALSE, FALSE) && spp_path_type(efi, FALSE, FALSE);
-    /* The stage is private. Publish an ISO only after both WIMs and the roots pass. */
+    MediaInstall install = {.options = options, .mode = mode};
+    /* The stage is private. Publish an ISO only after servicing succeeds. */
     const wchar_t *names[] = {L"sources\\boot.wim", L"sources\\install.wim"};
     for (unsigned i = 0; ok && i < 2; ++i) {
         wchar_t input[PATH_SIZE];
@@ -182,16 +201,18 @@ static BOOL service_media(const wchar_t *source, const wchar_t *work, const wcha
             ok = FALSE;
             break;
         }
+        if (i == 0 && mode != MEDIA_PATCH)
+            continue;
         options->boot_wim = i == 0;
         const wchar_t *donor = options->source;
         if (i == 0)
             options->source = NULL;
-        ok = edit_wim(input, staged, 1, count, service_image, options);
+        ok = edit_wim(input, staged, 1, count, service_media_install, &install);
         options->source = donor;
         if (ok)
             ok = MoveFileExW(staged, input, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     }
-    if (ok)
+    if (ok && mode == MEDIA_PATCH)
         ok = media_root_boot(options->algorithm, work);
     if (ok)
         ok = build_media_iso(oscdimg, work, partial, output);
@@ -199,6 +220,9 @@ static BOOL service_media(const wchar_t *source, const wchar_t *work, const wcha
         fwprintf(stderr, L"Media processing failed. Inspect the private workspace %ls. Any ISO output may be incomplete.\n", work);
         return FALSE;
     }
-    wprintf(L"Completed all boot.wim/install.wim indexes and media boot files. ISO: %ls\n", output);
+    wprintf(L"Completed %ls. ISO: %ls\n", mode == MEDIA_PATCH ?
+            L"all boot.wim/install.wim indexes and media boot files" :
+            mode == MEDIA_NT6 ? L"tokens-only updates in all install.wim indexes" :
+                               L"SPP-only updates in all install.wim indexes", output);
     return TRUE;
 }
