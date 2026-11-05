@@ -1,4 +1,6 @@
-# NT Timebomb Patch 5.0.2
+# NT Timebomb Patch 5.1
+
+Version 5.1 adds support for the x86 image-hash routine used by the supplied Windows 10 build 10587 Legacy memtest.exe. Its FlightSigned OID reference is loaded into ECX. Existing caller, branch, and unique-match checks still apply.
 
 NT Timebomb Patch is an offline command-line tool for Windows prerelease images. It replaces NT6 licensing tokens and optional Branding, services older FlightSigned boot files, processes installation media, and rebuilds BIOS/UEFI ISOs with Microsoft OSCDIMG. The former FlightPatch command name remains available as a compatibility launcher.
 

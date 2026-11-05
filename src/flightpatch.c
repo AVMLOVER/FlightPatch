@@ -510,7 +510,7 @@ static BOOL service_image(const wchar_t *root, void *context)
 
 static int help(void)
 {
-    wprintf(L"NT Timebomb Patch 5.0.2\n\n"
+    wprintf(L"NT Timebomb Patch 5.1\n\n"
             L"Use an elevated command prompt for offline servicing. In WinPE use SYSTEM.\n"
             L"All paths must be local drive paths under MAX_PATH. Quote paths containing spaces.\n\n"
             L"NT6 TOKENS AND OPTIONAL BRANDING\n"

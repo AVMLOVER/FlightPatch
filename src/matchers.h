@@ -165,7 +165,7 @@ static BOOL references(const Image *im, DWORD offset, DWORD target_rva, BOOL wid
     }
     if (wide_string && p[0] != 0x68)
         return FALSE;
-    if (!wide_string && p[0] != 0xba && !(p[0] == 0xc7 && p[1] == 0x45))
+    if (!wide_string && p[0] != 0xb9 && p[0] != 0xba && !(p[0] == 0xc7 && p[1] == 0x45))
         return FALSE;
     unsigned imm = p[0] == 0xc7 ? 3 : 1;
     return (uint64_t)u32(im->bytes + im->pe + 52) + target_rva == u32(p + imm);
