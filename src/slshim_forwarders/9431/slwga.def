@@ -1,0 +1,4 @@
+LIBRARY slwga.dll
+EXPORTS
+  SLIsGenuineLocal=nttp-slshim.SLIsGenuineLocal @228
+  nttp_ordinal_slwga_227=nttp-slshim.nttp_ordinal_slwga_227 @227 NONAME

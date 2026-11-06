@@ -1,6 +1,6 @@
 """Regenerate ABI facts from original user-supplied DLL sets; requires pefile/capstone.
 
-Usage: python tools/inspect-slshim-abi.py D:\\17746 D:\\29698
+Usage: python tools/inspect-slshim-abi.py D:\\5483 D:\\6946 D:\\8032 D:\\9431 D:\\17746 D:\\29698
 Directories may be flat extractions or complete Windows roots. This inspection
 is not required to build the committed, verified interface profiles.
 """
@@ -22,11 +22,23 @@ noops={'SLFireEvent','SLRegisterEvent','SLUnregisterEvent','SLPersistApplication
        'SLReArm','SLSetGenuineInformation','SLSetCurrentProductKey',
        'SLUninstallLicense','SLUninstallProofOfPurchase'}
 dis=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32);dis.detail=True
-arity={};profiles={};unknown=[]
+# Existing verified API contracts are authoritative for named interfaces.
+# Protected older licensing binaries contain RET-based local jumps and embedded
+# data after calls: a syntactic RET immediate is not necessarily an API return.
+existing=json.loads((source/'slshim_abi.json').read_text())
+contracts=existing['arity']
+# Public SAM signatures from Microsoft's slpublic.h documentation:
+# https://learn.microsoft.com/windows/win32/api/slpublic/nf-slpublic-slgetinstalledsamlicenseapplications
+# https://learn.microsoft.com/windows/win32/api/slpublic/nf-slpublic-slgetsamlicense
+# https://learn.microsoft.com/windows/win32/api/slpublic/nf-slpublic-slinstallsamlicense
+# https://learn.microsoft.com/windows/win32/api/slpublic/nf-slpublic-sluninstallsamlicense
+contracts.update({'SLGetInstalledSAMLicenseApplications':2,'SLGetSAMLicense':3,
+                  'SLInstallSAMLicense':3,'SLUninstallSAMLicense':1})
+arity=dict(contracts);profiles=dict(existing['profiles']);unknown=[];contract_fallback=set();seen_profiles=set()
 def arguments(pe,rva):
-    queue=[rva];seen=set();returns=set()
+    queue=[(rva,False)];seen=set();returns=set()
     while queue and len(seen)<2000:
-        address=queue.pop()
+        address,teardown=queue.pop()
         if address in seen:continue
         seen.add(address)
         try:raw=pe.get_offset_from_rva(address)
@@ -35,17 +47,23 @@ def arguments(pe,rva):
         if not instructions:continue
         i=instructions[0]
         if i.mnemonic.startswith('ret'):
-            returns.add(0 if not i.operands else i.operands[0].imm//4);continue
+            # Require a normal frame teardown, rather than a protected local
+            # RET trampoline or disassembly through inline data.
+            width=0 if not i.operands else i.operands[0].imm
+            if i.mnemonic!='ret' or not teardown or width%4 or width>64:return None
+            returns.add(width//4);continue
         if i.mnemonic in ['int3','ud2','hlt']:continue
         if i.mnemonic.startswith('j'):
-            if i.operands and i.operands[0].type==capstone.x86.X86_OP_IMM:queue.append(i.operands[0].imm)
+            if i.operands and i.operands[0].type==capstone.x86.X86_OP_IMM:queue.append((i.operands[0].imm,False))
             if i.mnemonic=='jmp':continue
-        queue.append(address+i.size)
+        teardown=i.mnemonic=='leave' or (i.mnemonic=='pop' and i.op_str=='ebp')
+        queue.append((address+i.size,teardown))
     return next(iter(returns)) if len(returns)==1 else None
 for argument in sys.argv[1:]:
     original=Path(argument).resolve()
     version=original.name
-    if not re.fullmatch('[A-Za-z0-9_-]+',version) or version in profiles:raise ValueError('Invalid/duplicate profile name')
+    if not re.fullmatch('[A-Za-z0-9_-]+',version) or version in seen_profiles:raise ValueError('Invalid/duplicate profile name')
+    seen_profiles.add(version)
     native=next((original/p for p in ['Windows/System32','System32',''] if (original/p/'slc.dll').is_file()),None)
     wow=next((original/p for p in ['Windows/SysWOW64','SysWOW64'] if (original/p/'slc.dll').is_file()),None)
     if native is None:raise ValueError('Missing native DLL set: '+str(original))
@@ -54,6 +72,7 @@ for argument in sys.argv[1:]:
         wow=native
     profile={}
     for module in ['slc','slcext','sppc','sppcext','slwga']:
+        if not (native/(module+'.dll')).is_file() and not (wow/(module+'.dll')).is_file():continue
         pe=pefile.PE(str(wow/(module+'.dll')))
         if pe.FILE_HEADER.Machine!=0x14c:raise ValueError('Expected x86 code for argument-width inspection')
         native_pe=pefile.PE(str(native/(module+'.dll')))
@@ -63,6 +82,9 @@ for argument in sys.argv[1:]:
         for export in pe.DIRECTORY_ENTRY_EXPORT.symbols:
             name=export.name.decode() if export.name else f'nttp_ordinal_{module}_{export.ordinal}'
             count=arguments(pe,export.address) if not export.forwarder else None
+            if name in contracts:
+                if count!=contracts[name]:contract_fallback.add((version,module,name))
+                count=contracts[name]
             if count is not None:
                 if name in arity and arity[name]!=count:raise ValueError((name,arity[name],count))
                 arity[name]=count
@@ -89,5 +111,6 @@ for name in sorted(all_names):
     definitions.append('    '+name+('='+target if target!=name else ''))
 (source/'slshim_stubs.h').write_text('/* Generated verified x86 stdcall widths. See slshim_abi.json. */\n'+'\n'.join(stubs)+'\n')
 (source/'slshim_runtime.def').write_text('\n'.join(definitions)+'\n')
-print('Verified names',len(all_names),'arities',sorted(set(arity.values())))
+print('Verified export interfaces',len(all_names),'arities',sorted(set(arity.values())))
+print('Curated/documented ABI contracts used where code inspection was unavailable:',len(contract_fallback))
 for name in sorted(implemented):print(name,arity.get(name))

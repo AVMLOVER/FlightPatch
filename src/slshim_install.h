@@ -14,6 +14,8 @@ typedef struct {
     SlBackupFile files[SL_FILES];
 } SlBackup;
 static const wchar_t *const sl_modules[]={L"slc.dll",L"slcext.dll",L"sppc.dll",L"sppcext.dll",L"slwga.dll"};
+static const wchar_t *const sl_platform_services[]={L"sppsvc",L"sppuinotify",L"slsvc",L"SLUINotify"};
+#include "slshim_controls.h"
 
 static BOOL sl_stream_sha(BCRYPT_ALG_HANDLE algorithm,const wchar_t *path,char hex[65])
 {
@@ -184,6 +186,7 @@ static DWORD sl_config_hives(SlRegistry *api,const wchar_t *system,const wchar_t
     if(!error && restore && (wcscmp(edition,backup->edition) || wcscmp(build,backup->build)))error=ERROR_REVISION_MISMATCH;
     if(!error && restore)error=api->OpenHive(old_system,&original_sys);
     if(!error && restore)error=api->OpenHive(old_software,&original_soft);
+    SlControlMap controls[SL_CONTROL_LIMIT];DWORD control_count=0;
     if(!error && !restore) {
         wcscpy(backup->edition,edition);wcscpy(backup->build,build);
         const wchar_t *names[]={L"Current",L"Default",L"LastKnownGood"};
@@ -205,32 +208,47 @@ static DWORD sl_config_hives(SlRegistry *api,const wchar_t *system,const wchar_t
         if(!error && api->GetValue(soft,L"Microsoft\\Windows NT\\CurrentVersion\\Svchost",L"NTTimebombSLShim",&type,NULL,&n)!=ERROR_FILE_NOT_FOUND)
             error=ERROR_ALREADY_EXISTS;
     }
+    if(!error && restore)error=sl_restore_controls(api,sys,original_sys,backup,controls,&control_count);
+    if(!error && !restore)for(unsigned i=0;i<backup->control_count;++i)
+        controls[control_count++]=(SlControlMap){backup->controls[i],backup->controls[i]};
     BYTE *policy=NULL;DWORD policy_size=0;
-    for(unsigned i=0;!error && i<backup->control_count;++i) {
-        wchar_t options[100],service[120],parameters[140],spp[100];
-        swprintf(options,100,L"ControlSet%03lu\\Control\\ProductOptions",backup->controls[i]);
-        swprintf(service,120,L"ControlSet%03lu\\Services\\NTTimebombSLShim",backup->controls[i]);
+    for(unsigned i=0;!error && i<control_count;++i) {
+        wchar_t options[100],source_options[100],service[120],parameters[140],spp[100],source_spp[100];
+        swprintf(options,100,L"ControlSet%03lu\\Control\\ProductOptions",controls[i].target);
+        swprintf(source_options,100,L"ControlSet%03lu\\Control\\ProductOptions",controls[i].source);
+        swprintf(service,120,L"ControlSet%03lu\\Services\\NTTimebombSLShim",controls[i].target);
         swprintf(parameters,140,L"%ls\\Parameters",service);
         SlKey source_sys=restore?original_sys:sys;
         DWORD type=0,size=0;
-        error=api->GetValue(source_sys,options,L"ProductPolicy",&type,NULL,&size);
+        error=api->GetValue(source_sys,source_options,L"ProductPolicy",&type,NULL,&size);
         BYTE *data=!error && size<=SL_POLICY_MAX?malloc(size):NULL;
         if(!data){error=ERROR_INVALID_DATA;break;}
-        if(!error)error=api->GetValue(source_sys,options,L"ProductPolicy",&type,data,&size);
+        if(!error)error=api->GetValue(source_sys,source_options,L"ProductPolicy",&type,data,&size);
         if(!error && (type!=REG_BINARY || !sl_policy_valid(data,size)))error=ERROR_INVALID_DATA;
         if(!error && restore)error=sl_set(api,sys,options,L"ProductPolicy",REG_BINARY,data,size);
         if(!error && !restore) {
             if(!sl_policy_profile(data,&size))error=ERROR_INVALID_DATA;
+            /* Older kernels consume the policy before the service can start. */
+            if(!error)error=sl_set(api,sys,options,L"ProductPolicy",REG_BINARY,data,size);
             if(!policy){policy=data;policy_size=size;data=NULL;}
             else if(size!=policy_size || memcmp(policy,data,size))error=ERROR_INVALID_DATA;
         }
         free(data);
-        for(unsigned s=0;!error && s<2;++s) {
-            swprintf(spp,100,L"ControlSet%03lu\\Services\\%ls",backup->controls[i],s?L"sppuinotify":L"sppsvc");
+        BOOL core_service=FALSE;
+        for(unsigned s=0;!error && s<4;++s) {
+            swprintf(spp,100,L"ControlSet%03lu\\Services\\%ls",controls[i].target,sl_platform_services[s]);
+            swprintf(source_spp,100,L"ControlSet%03lu\\Services\\%ls",controls[i].source,sl_platform_services[s]);
             DWORD start=0;
-            if(!sl_get(api,source_sys,spp,L"Start",REG_DWORD,&start,4)) {if(!s)error=ERROR_FILE_NOT_FOUND;continue;}
+            SlKey existing=NULL;
+            error=api->OpenKey(source_sys,source_spp,&existing);
+            if(error==ERROR_FILE_NOT_FOUND){error=ERROR_SUCCESS;continue;}
+            if(existing)api->CloseKey(existing);
+            if(error)break;
+            if(!sl_get(api,source_sys,source_spp,L"Start",REG_DWORD,&start,4)){error=ERROR_INVALID_DATA;break;}
+            if(s==0 || s==2)core_service=TRUE;
             error=sl_set_number(api,sys,spp,L"Start",restore?start:4);
         }
+        if(!error && !core_service)error=ERROR_FILE_NOT_FOUND;
         if(error)break;
         if(restore) { error=sl_delete_tree(api,sys,service,0);continue; }
         SlKey collision=NULL;
@@ -378,20 +396,56 @@ static BOOL sl_attribute(const wchar_t *path,DWORD attributes)
 }
 static BOOL sl_installed_hives(SlRegistry *api,const wchar_t *root,const SlBackup *backup)
 {
-    wchar_t path[PATH_SIZE],edition[80],build[40];SlKey sys=NULL,soft=NULL;DWORD one=0;
+    wchar_t path[PATH_SIZE],edition[80],build[40],cache_edition[80];SlKey sys=NULL,soft=NULL;DWORD one=0;
+    BYTE *policy=NULL,*current=NULL;DWORD type=0,size=0;
     BOOL ok=sl_target_file(root,L"Windows\\System32\\Config\\SYSTEM",path) && !api->OpenHive(path,&sys) &&
         sl_target_file(root,L"Windows\\System32\\Config\\SOFTWARE",path) && !api->OpenHive(path,&soft) &&
         sl_get(api,sys,L"NTTimebombSLShim",L"Version",REG_DWORD,&one,4) && one==1 &&
         sl_string(api,soft,L"Microsoft\\Windows NT\\CurrentVersion",L"EditionID",edition,80) &&
         sl_string(api,soft,L"Microsoft\\Windows NT\\CurrentVersion",L"CurrentBuild",build,40) &&
-        !wcscmp(edition,backup->edition) && !wcscmp(build,backup->build);
-    for(unsigned i=0;ok && i<backup->control_count;++i) {
-        wchar_t key[100];DWORD start=0;
-        swprintf(key,100,L"ControlSet%03lu\\Services\\sppsvc",backup->controls[i]);
-        ok=sl_get(api,sys,key,L"Start",REG_DWORD,&start,4) && start==4;
-        swprintf(key,100,L"ControlSet%03lu\\Services\\NTTimebombSLShim",backup->controls[i]);
-        ok=ok && sl_get(api,sys,key,L"Start",REG_DWORD,&start,4) && start==2;
+        !wcscmp(edition,backup->edition) && !wcscmp(build,backup->build) &&
+        sl_string(api,sys,L"NTTimebombSLShim",L"EditionID",cache_edition,80) && !wcscmp(edition,cache_edition);
+    if(ok)ok=!api->GetValue(sys,L"NTTimebombSLShim",L"Policy",&type,NULL,&size) && type==REG_BINARY && size>=24 && size<=SL_POLICY_MAX;
+    if(ok) {
+        policy=malloc(size);current=malloc(size);
+        ok=policy && current && sl_get(api,sys,L"NTTimebombSLShim",L"Policy",REG_BINARY,policy,size) && sl_policy_valid(policy,size);
     }
+    if(ok) {
+        DWORD profiled=size;memcpy(current,policy,size);
+        ok=sl_policy_profile(current,&profiled) && profiled==size && !memcmp(current,policy,size);
+    }
+    static const wchar_t group[]=L"NTTimebombSLShim\0";
+    wchar_t group_value[sizeof group/sizeof *group];
+    if(ok)ok=sl_get(api,soft,L"Microsoft\\Windows NT\\CurrentVersion\\Svchost",L"NTTimebombSLShim",REG_MULTI_SZ,group_value,sizeof group) && !memcmp(group_value,group,sizeof group);
+    DWORD controls[SL_CONTROL_LIMIT],control_count=0;
+    if(ok)ok=!sl_control_list(api,sys,backup,TRUE,controls,&control_count);
+    for(unsigned i=0;ok && i<control_count;++i) {
+        wchar_t key[100];DWORD start=0;
+        BOOL core_service=FALSE;
+        for(unsigned s=0;ok && s<4;++s) {
+            swprintf(key,100,L"ControlSet%03lu\\Services\\%ls",controls[i],sl_platform_services[s]);
+            SlKey existing=NULL;DWORD error=api->OpenKey(sys,key,&existing);
+            if(error==ERROR_FILE_NOT_FOUND)continue;
+            if(existing)api->CloseKey(existing);
+            ok=!error && sl_get(api,sys,key,L"Start",REG_DWORD,&start,4) && start==4;
+            if(ok && (s==0 || s==2))core_service=TRUE;
+        }
+        ok=ok && core_service;
+        swprintf(key,100,L"ControlSet%03lu\\Control\\ProductOptions",controls[i]);
+        ok=ok && sl_get(api,sys,key,L"ProductPolicy",REG_BINARY,current,size) && !memcmp(current,policy,size);
+        swprintf(key,100,L"ControlSet%03lu\\Services\\NTTimebombSLShim",controls[i]);
+        ok=ok && sl_get(api,sys,key,L"Start",REG_DWORD,&start,4) && start==2;
+        ok=ok && sl_get(api,sys,key,L"Type",REG_DWORD,&start,4) && start==SERVICE_WIN32_SHARE_PROCESS;
+        wchar_t actual[PATH_SIZE];
+        static const wchar_t image[]=L"\"%SystemRoot%\\System32\\svchost.exe\" -k NTTimebombSLShim";
+        if(ok)ok=sl_get(api,sys,key,L"ImagePath",REG_EXPAND_SZ,actual,sizeof image) && !wcscmp(actual,image) &&
+            sl_string(api,sys,key,L"ObjectName",actual,PATH_SIZE) && !wcscmp(actual,L"LocalSystem");
+        swprintf(key,100,L"ControlSet%03lu\\Services\\NTTimebombSLShim\\Parameters",controls[i]);
+        static const wchar_t dll[]=L"%SystemRoot%\\System32\\nttp-slshim.dll";
+        if(ok)ok=sl_get(api,sys,key,L"ServiceDll",REG_EXPAND_SZ,actual,sizeof dll) && !wcscmp(actual,dll) &&
+            sl_string(api,sys,key,L"ServiceMain",actual,PATH_SIZE) && !wcscmp(actual,L"ServiceMain");
+    }
+    free(policy);free(current);
     if(sys)api->CloseHive(sys);
     if(soft)api->CloseHive(soft);
     return ok;
@@ -529,7 +583,7 @@ static BOOL sl_install(BCRYPT_ALG_HANDLE algorithm,const wchar_t *root,BOOL rest
     if(!sl_manifest_io(manifest,&backup,TRUE))goto finish;
     ok=TRUE;
     wprintf(restore?L"SLShim removed. Original DLLs, service settings and kernel policy restored; unrelated registry settings retained.\n":
-                    L"Experimental SLShim installed for %ls (build %ls). Original SPP services disabled; the dedicated shim service starts in the target after reboot.\n",backup.edition,backup.build);
+                    L"SLShim installed for %ls (build %ls). Original licensing services disabled; the dedicated shim service starts in the target after reboot.\n",backup.edition,backup.build);
     wprintf(L"Backups retained at %ls. /cishim remains a separate operation.\n",directory);
 finish:
     if(!ok) {

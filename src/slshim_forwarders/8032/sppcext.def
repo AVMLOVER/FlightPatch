@@ -1,0 +1,21 @@
+LIBRARY sppcext.dll
+EXPORTS
+  SLAcquireGenuineTicket=nttp-slshim.SLAcquireGenuineTicket @2
+  SLAcquireGenuineTicketForAppId=nttp-slshim.SLAcquireGenuineTicketForAppId @1
+  SLActivateProduct=nttp-slshim.SLActivateProduct @3
+  SLDepositTokenActivationResponse=nttp-slshim.SLDepositTokenActivationResponse @4
+  SLFreeTokenActivationCertificates=nttp-slshim.SLFreeTokenActivationCertificates @5
+  SLFreeTokenActivationGrants=nttp-slshim.SLFreeTokenActivationGrants @6
+  SLGenerateTokenActivationChallenge=nttp-slshim.SLGenerateTokenActivationChallenge @7
+  SLGetGenuineInformationEx=nttp-slshim.SLGetGenuineInformationEx @8
+  SLGetPackageProductKey=nttp-slshim.SLGetPackageProductKey @9
+  SLGetPackageProperties=nttp-slshim.SLGetPackageProperties @10
+  SLGetPackageToken=nttp-slshim.SLGetPackageToken @11
+  SLGetReferralInformation=nttp-slshim.SLGetReferralInformation @12
+  SLGetServerStatus=nttp-slshim.SLGetServerStatus @13
+  SLGetTokenActivationCertificates=nttp-slshim.SLGetTokenActivationCertificates @14
+  SLGetTokenActivationGrants=nttp-slshim.SLGetTokenActivationGrants @15
+  SLInitialize=nttp-slshim.SLInitialize @16
+  SLInstallPackage=nttp-slshim.SLInstallPackage @17
+  SLSignTokenActivationChallenge=nttp-slshim.SLSignTokenActivationChallenge @18
+  SLUninstallPackage=nttp-slshim.SLUninstallPackage @19

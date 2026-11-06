@@ -2,6 +2,7 @@
 from pathlib import Path
 import hashlib
 import re
+import json
 import sys
 import zipfile
 
@@ -23,15 +24,16 @@ for folder in ['src','tools']:
             include(path)
 for name in ['README.md','Microsoft-OFFREG-NOTICE.txt','offreg-x86.dll','offreg-x64.dll']:
     include(root/'dependencies'/name)
+profiles=json.loads((root/'src/slshim_abi.json').read_text())['profiles']
 for arch in ['x86','x64']:
     include(root/'slshim'/arch/'nttp-slshim.dll')
-    for profile in ['17746','29698']:
-        for module in ['slc','slcext','sppc','sppcext','slwga']:
+    for profile,modules in profiles.items():
+        for module in modules:
             include(root/'slshim'/arch/profile/(module+'.dll'))
 
 fingerprints=re.findall(r'L"((?:slshim|dependencies)/[^\"]+)", "([0-9a-f]{64})"',
                        (root/'src/slshim_payloads.h').read_text())
-if len(fingerprints)!=24:raise SystemExit('Unexpected payload fingerprint count')
+if len(fingerprints)!=4+2*sum(len(modules) for modules in profiles.values()):raise SystemExit('Unexpected payload fingerprint count')
 for name,expected in fingerprints:
     if hashlib.sha256(files[name]).hexdigest()!=expected:
         raise SystemExit('Payload/header mismatch; rebuild payloads and both executables: '+name)

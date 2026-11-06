@@ -527,15 +527,16 @@ static BOOL service_image(const wchar_t *root, void *context)
 
 static int help(void)
 {
-    wprintf(L"NT Timebomb Patch 5.2 (experimental build)\n\n"
+    wprintf(L"NT Timebomb Patch 5.2\n\n"
             L"Use an elevated command prompt for offline servicing. In WinPE use SYSTEM.\n"
             L"All paths must be local drive paths under MAX_PATH. Quote paths containing spaces.\n\n"
             L"EXPERIMENTAL COMPLETE WINDOWS LICENSING SHIM\n"
             L"  nttimebomb /slshim OFFLINE_WINDOWS_ROOT\n"
             L"  nttimebomb /slshim-restore OFFLINE_WINDOWS_ROOT\n"
             L"Explicitly replaces the target's licensing client DLLs, disables existing Windows\n"
-            L"SPP services and installs a dedicated LocalSystem shim service. It uses that SKU's\n"
-            L"own ProductPolicy, preserves DLL export names/ordinals and validates known ABIs.\n"
+            L"licensing services (including Vista SLSvc) and installs a dedicated LocalSystem\n"
+            L"shim service. It uses that SKU's ProductPolicy, preserves DLL export names/ordinals\n"
+            L"and validates known ABIs. Older policy expiry is removed before first boot.\n"
             L"Use the complete slshim/ and dependencies/ folders from this package. Backups\n"
             L"are retained in OFFLINE_ROOT\\NTTimebombBackup\\SLShim. Restore includes original\n"
             L"DLLs and permissions, SPP service settings and ProductPolicy; unrelated registry\n"

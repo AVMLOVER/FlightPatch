@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sddl.h>
 #include <aclapi.h>
+#include "slshim_portable.h"
 #include "slshim_policy.h"
 
 #define SL_KEY L"SYSTEM\\NTTimebombSLShim"
@@ -212,10 +213,12 @@ static LONG sl_refresh(HKEY options)
     BOOL equal=!error && size==sl_cache_size && !memcmp(current,sl_cache,size);
     HeapFree(GetProcessHeap(),0,current);
     if(error || equal)return error;
-    wchar_t windows[MAX_PATH],folder[MAX_PATH],file[MAX_PATH];
-    if(!GetWindowsDirectoryW(windows,MAX_PATH) ||
-       swprintf(folder,MAX_PATH,L"%ls\\Temp\\NTTimebombSLShim",windows)<0 ||
-       swprintf(file,MAX_PATH,L"%ls\\policy-%lu-%llu.hiv",folder,GetCurrentProcessId(),GetTickCount64())<0)
+    wchar_t windows[MAX_PATH],folder[MAX_PATH]={0},file[MAX_PATH]={0};
+    UINT length=GetWindowsDirectoryW(windows,MAX_PATH);
+    if(!length || length>=MAX_PATH || !sl_append(folder,windows) ||
+       !sl_append(folder,L"\\Temp\\NTTimebombSLShim") || !sl_append(file,folder) ||
+       !sl_append(file,L"\\policy-") || !sl_append_hex(file,GetCurrentProcessId(),8) ||
+       !sl_append(file,L"-") || !sl_append_hex(file,GetTickCount64(),16) || !sl_append(file,L".hiv"))
         return ERROR_FILENAME_EXCED_RANGE;
     PSECURITY_DESCRIPTOR sd=NULL;
     if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",SDDL_REVISION_1,&sd,NULL))return GetLastError();
@@ -264,10 +267,18 @@ void WINAPI ServiceMain(DWORD argc,wchar_t **argv)
         sl_service_status.dwWaitHint=0;
         SetServiceStatus(sl_service_handle,&sl_service_status);
         HANDLE events[]={sl_stop_event,changed};
+        BOOL armed=FALSE;
         while(WaitForSingleObject(sl_stop_event,0)==WAIT_TIMEOUT) {
-            error=RegNotifyChangeKeyValue(options,FALSE,REG_NOTIFY_CHANGE_LAST_SET,changed,TRUE);
-            if(error || (error=sl_refresh(options))!=ERROR_SUCCESS)break;
-            if(WaitForMultipleObjects(2,events,FALSE,30000)==WAIT_OBJECT_0)break;
+            if(!armed) {
+                error=RegNotifyChangeKeyValue(options,FALSE,REG_NOTIFY_CHANGE_LAST_SET,changed,TRUE);
+                if(error)break;
+                armed=TRUE;
+            }
+            if((error=sl_refresh(options))!=ERROR_SUCCESS)break;
+            DWORD wait=WaitForMultipleObjects(2,events,FALSE,30000);
+            if(wait==WAIT_OBJECT_0)break;
+            if(wait==WAIT_OBJECT_0+1)armed=FALSE;
+            else if(wait!=WAIT_TIMEOUT){error=wait==WAIT_FAILED?GetLastError():ERROR_INVALID_DATA;break;}
         }
     }
     if(options)RegCloseKey(options);

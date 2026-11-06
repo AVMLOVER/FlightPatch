@@ -63,11 +63,105 @@ services, ProductPolicy, and activation state were not modified.
   rejected these extracts; no original hive header repair or host SYSTEM import
   was used.
 
-Both supplied ProductPolicy blobs have no expiration entry. Their original SKU
+The 17746 and 29698 ProductPolicy blobs have no expiration entry. Their original SKU
 feature policy is retained; absence of that entry does not prove absence of
 other preview expiry checks. `/cishim` is independent. The shim's dedicated
 LocalSystem service is configured offline but has not been started in a booted
 target system here. OOBE, sign-in, service startup, MMC/Defender expiry behavior,
 and third-party consumers of unsupported licensing APIs still need destination
-VM testing. The package is an experimental build, not a claim of universal
-Windows build compatibility or Microsoft activation.
+VM testing. SLShim remains an experimental feature in the 5.2 release, with no
+claim of universal Windows build compatibility or Microsoft activation.
+
+## Legacy SLShim profile analysis
+
+Four additional supplied sets were inspected through private copies. Each set
+contains native x64 DLLs, x86 SysWOW64 companions, and SYSTEM/SOFTWARE hives.
+Their registry EditionID values were used instead of the ProductName display
+string; the 8032 hive still identifies its product as Windows 7 Ultimate.
+
+| Sample | EditionID | Supported licensing DLLs per architecture | Existing licensing services | Kernel-ExpirationDate |
+| --- | --- | --- | --- | --- |
+| Vista 5483 | BusinessN | slc, slcext, slwga | SLSvc, SLUINotify | 2007-05-31 |
+| Windows 7 6946 | Ultimate | slc, slcext, sppc, sppcext, slwga | sppsvc, sppuinotify | 2009-07-01 |
+| Windows 8 8032 | Ultimate | slc, slcext, sppc, sppcext, slwga | sppsvc | Absent in this policy |
+| Windows 8.1 9431 | Enterprise | slc, slcext, sppc, sppcext, slwga | sppsvc | Absent in this policy |
+
+The two expiration entries are 16-byte binary values. The policy profile removes
+the exact named entry, retains the other SKU feature entries, and updates the
+policy's lengths. Installation now also writes the profiled policy into every
+selected offline control set before first boot; the service is configured to
+maintain that same cached policy later. Restore uses the saved original policy and
+service start settings while retaining unrelated registry changes.
+
+The freestanding target runtime imports only KERNEL32 and ADVAPI32. Both x86
+and x64 import sets were checked against the supplied 5483 kernel32.dll and
+advapi32.dll; all required direct entry points were present. No UCRT or MSVCRT
+is required by the target runtime. These are static import checks, not evidence
+that the DLL or its service has run successfully in a booted Vista system.
+
+Older licensing code contains protected control flow. The ABI inspection tool
+reuses maintained contracts for named interfaces instead of treating arbitrary
+RET immediates as API stack cleanup. Vista SLCExt ordinals 300 through 304 were
+inspected through normal frame teardown and return paths, with x86 stack cleanup
+of 28, 36, 28, 40, and 16 bytes respectively (7, 9, 7, 10, and 4 32-bit slots). Unsupported
+interfaces remain explicit unsupported results. Vista's slcc.dll is preserved
+as the original COM component and is not part of the generic replacement set.
+
+The updated freestanding runtime passed 12 API combinations: all six profiles
+with both x86 and x64 DLL hosts. The core and existing forwarders loaded, every
+named export and ordinal resolved, and functional checks passed for context
+open/close, licensed status, genuine state, SKU policy queries, unknown-policy
+errors, and load/query/unload of an application-policy context. Vista's expected
+three-module set was handled without requiring the later SPP client DLLs.
+
+Independent complete comparisons of registry values and key security descriptors
+passed for all six profiles, covering 3,091,958 original value/security records.
+They confirmed that 5483 and 6946 lose the exact
+Kernel-ExpirationDate entry in the staged offline ProductPolicy, that other SKU
+policies remain intact, and that restore recovers the original policy and service
+settings while retaining an unrelated test key added after installation.
+
+Additional implementation safeguards check the actual installed policy as well
+as the cached copy and critical service/group settings during repeat detection.
+Restore prefers a same-ID original in the complete SYSTEM backup. For a genuinely
+new recognizable shim-owned clone, its possible source policies and four
+licensing-service presence/start settings must be identical; ambiguous ancestry
+is rejected before publication, and pruned original sets are skipped. The service loop retains one outstanding
+asynchronous RegNotifyChangeKeyValue registration across a 30-second timeout,
+and registers again after that notification completes.
+
+Final elevated production CLI tests passed in all 12 combinations of the six
+profiles and x86/x64 host executables: install, repeat, restore, and repeat
+restore. The Vista fixture included TrustedInstaller-owned, read-only native
+SLC.dll, SysWOW64 SLCExt.dll, and SYSTEM hive files. Their owner, group, DACL,
+attributes, and last-write time were preserved. Unrelated files, including
+Vista's original SLCC.dll, remained unchanged.
+
+Additional production checks passed:
+
+- Replacing the installed policy with the original expiration-bearing policy
+  caused repeat detection to refuse the stale installation.
+- Restoring a new ControlSet999 clone succeeded for 5483 with the x64 host and
+  6946 with the x86 host. A fixture with ambiguous original ControlSet998 source
+  settings and a new ControlSet999 was rejected before target writes.
+- Reusing originally unselected ControlSet002 restored its own saved service
+  Start value of 3, rather than ControlSet001's value of 2.
+- Notification mocks passed all 12 combinations, observing two registrations
+  across six waits. This checks the notification-loop behavior without starting
+  an actual Windows service.
+
+Private-key policy-refresh probes completed RegSaveKeyEx, RegLoadAppKey,
+RegSetValueEx, and key close successfully. RegRestoreKey with flags 8 and 0
+returned Win32 error 1 and observed NTSTATUS 0xC0000002 for HKCU targets, in
+emulated x86/x64 processes and a native ARM64 probe. An application-hive target
+returned 19 / 0xC0000189; an attempt to mount a fresh private hive under HKLM
+returned 87 / 0xC000000D. The cause has not been established. These probes do
+not establish successful live kernel-policy refresh, and the production service
+refresh algorithm has not been changed to bypass these results. All private
+fixtures were cleaned up successfully; the host's actual SYSTEM, SPP, and SCM
+configuration was not changed.
+
+Destination VM tests must still cover service startup, early boot, OOBE,
+sign-in, and behavior after the original expiry date. An absent policy expiration
+entry in 8032 or 9431 does not prove that other expiry checks are absent. The
+formal 5.2 package is tagged v5.2.0; the v5.2 preview tag remains unchanged.

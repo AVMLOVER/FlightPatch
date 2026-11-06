@@ -1,0 +1,18 @@
+LIBRARY sppcext.dll
+EXPORTS
+  SLAcquireGenuineTicket=nttp-slshim.SLAcquireGenuineTicket @1
+  SLActivateProduct=nttp-slshim.SLActivateProduct @2
+  SLDepositTokenActivationResponse=nttp-slshim.SLDepositTokenActivationResponse @3
+  SLFreeTokenActivationCertificates=nttp-slshim.SLFreeTokenActivationCertificates @4
+  SLFreeTokenActivationGrants=nttp-slshim.SLFreeTokenActivationGrants @5
+  SLGenerateTokenActivationChallenge=nttp-slshim.SLGenerateTokenActivationChallenge @6
+  SLGetPackageProductKey=nttp-slshim.SLGetPackageProductKey @7
+  SLGetPackageProperties=nttp-slshim.SLGetPackageProperties @8
+  SLGetPackageToken=nttp-slshim.SLGetPackageToken @9
+  SLGetReferralInformation=nttp-slshim.SLGetReferralInformation @10
+  SLGetServerStatus=nttp-slshim.SLGetServerStatus @11
+  SLGetTokenActivationCertificates=nttp-slshim.SLGetTokenActivationCertificates @12
+  SLGetTokenActivationGrants=nttp-slshim.SLGetTokenActivationGrants @13
+  SLInstallPackage=nttp-slshim.SLInstallPackage @14
+  SLSignTokenActivationChallenge=nttp-slshim.SLSignTokenActivationChallenge @15
+  SLUninstallPackage=nttp-slshim.SLUninstallPackage @16

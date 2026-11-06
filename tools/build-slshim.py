@@ -7,9 +7,12 @@ import os
 import subprocess
 import struct
 import sys
+import shutil
 
 root=Path(__file__).resolve().parents[1]
 zig=sys.argv[1] if len(sys.argv)>1 else os.environ.get('ZIG','zig')
+zig_path=Path(shutil.which(zig) or zig).resolve()
+windows_headers=zig_path.parent/'lib/libc/include/any-windows-any'
 output=root/'slshim'
 metadata=json.loads((root/'src/slshim_abi.json').read_text())
 def command(arguments):
@@ -19,8 +22,12 @@ def build(arch):
     directory=output/arch
     directory.mkdir(parents=True,exist_ok=True)
     target='x86-windows-gnu' if arch=='x86' else 'x86_64-windows-gnu'
-    command(['-target',target,'-shared','-std=c11','-Oz','-s','src/slshim_runtime.c',
-             'src/slshim_runtime.def','-ladvapi32','-o',str(directory/'nttp-slshim.dll')])
+    runtime_entry='DllMain@12' if arch=='x86' else 'DllMain'
+    command(['-target',target,'-shared','-std=c11','-Oz','-s','-nostdlib',
+             '-ffreestanding','-fno-builtin','-fno-stack-protector',
+             '-isystem',str(windows_headers),
+             '-Wl,--entry,'+runtime_entry,'src/slshim_runtime.c',
+             'src/slshim_runtime.def','-ladvapi32','-lkernel32','-o',str(directory/'nttp-slshim.dll')])
     for profile,modules in metadata['profiles'].items():
         folder=directory/profile
         folder.mkdir(exist_ok=True)

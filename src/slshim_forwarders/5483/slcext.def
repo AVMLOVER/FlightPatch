@@ -1,0 +1,16 @@
+LIBRARY slcext.dll
+EXPORTS
+  SLAcquireGenuineTicket=nttp-slshim.SLAcquireGenuineTicket @305
+  SLActivateProduct=nttp-slshim.SLActivateProduct @306
+  SLGetPackageProductKey=nttp-slshim.SLGetPackageProductKey @307
+  SLGetPackageProperties=nttp-slshim.SLGetPackageProperties @308
+  SLGetPackageToken=nttp-slshim.SLGetPackageToken @309
+  SLGetReferralInformation=nttp-slshim.SLGetReferralInformation @310
+  SLGetServerStatus=nttp-slshim.SLGetServerStatus @311
+  SLInstallPackage=nttp-slshim.SLInstallPackage @312
+  SLUninstallPackage=nttp-slshim.SLUninstallPackage @313
+  nttp_ordinal_slcext_300=nttp-slshim.nttp_ordinal_slcext_300 @300 NONAME
+  nttp_ordinal_slcext_301=nttp-slshim.nttp_ordinal_slcext_301 @301 NONAME
+  nttp_ordinal_slcext_302=nttp-slshim.nttp_ordinal_slcext_302 @302 NONAME
+  nttp_ordinal_slcext_303=nttp-slshim.nttp_ordinal_slcext_303 @303 NONAME
+  nttp_ordinal_slcext_304=nttp-slshim.nttp_ordinal_slcext_304 @304 NONAME

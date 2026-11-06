@@ -31,6 +31,7 @@ ServiceMain
     SLGetGenuineInformation
     SLGetGenuineInformationEx=SLGetGenuineInformation
     SLGetInstalledProductKeyIds=sl_unsupported4
+    SLGetInstalledSAMLicenseApplications=sl_unsupported2
     SLGetLicense=sl_unsupported4
     SLGetLicenseFileId=sl_unsupported4
     SLGetLicenseInformation=sl_unsupported6
@@ -44,6 +45,7 @@ ServiceMain
     SLGetPolicyInformationDWORD
     SLGetProductSkuInformation=SLGetPKeyInformation
     SLGetReferralInformation=sl_unsupported5
+    SLGetSAMLicense=sl_unsupported3
     SLGetSLIDList
     SLGetServerStatus=sl_unsupported5
     SLGetServiceInformation=SLGetPolicyInformation
@@ -56,6 +58,7 @@ ServiceMain
     SLInstallPackage=sl_unsupported6
     SLInstallProofOfPurchase=sl_unsupported6
     SLInstallProofOfPurchaseEx=sl_unsupported8
+    SLInstallSAMLicense=sl_unsupported3
     SLIsGenuineLocal
     SLIsGenuineLocalEx
     SLIsWindowsGenuineLocal
@@ -75,6 +78,7 @@ ServiceMain
     SLUninstallLicense=sl_success2
     SLUninstallPackage=sl_unsupported5
     SLUninstallProofOfPurchase=sl_success2
+    SLUninstallSAMLicense=sl_unsupported1
     SLUnloadApplicationPolicies
     SLUnregisterEvent=sl_success4
     SLUnregisterPlugin=sl_unsupported2
@@ -94,9 +98,16 @@ ServiceMain
     SLpGetTokenActivationGrantInfo=sl_unsupported6
     SLpIAActivateProduct=sl_unsupported2
     SLpIsCurrentInstalledProductKeyDefaultKey=sl_unsupported2
+    SLpProcessOemProductKey=sl_unsupported2
     SLpProcessVMPipeMessage=sl_unsupported5
     SLpSetActivationInProgress=sl_unsupported2
+    SLpTriggerServiceW=sl_unsupported4
     SLpTriggerServiceWorker=sl_unsupported4
     SLpUpdateComponentTokens=sl_unsupported2
     SLpVLActivateProduct=sl_unsupported2
+    nttp_ordinal_slcext_300=sl_unsupported7
+    nttp_ordinal_slcext_301=sl_unsupported9
+    nttp_ordinal_slcext_302=sl_unsupported7
+    nttp_ordinal_slcext_303=sl_unsupported10
+    nttp_ordinal_slcext_304=sl_unsupported4
     nttp_ordinal_slwga_227=sl_unsupported2

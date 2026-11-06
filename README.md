@@ -1,12 +1,12 @@
-# NT Timebomb Patch 5.2 (experimental)
+# NT Timebomb Patch 5.2
 
-Version 5.2 adds explicit /cishim servicing with no build-number check, based on the zero-expiry callback principle in cishim, and a separate experimental /slshim licensing-layer replacement with offline restore. It restores the Build 15058 boundary for ordinary image/SPP workflows: newer images only have LicensingUI.exe renamed and receive a prompt to use /cishim. The per-SKU SPP donor layout and the 10587 Legacy memtest.exe support are retained. This is an experimental preview release; destination-system boot and expiry behavior still need testing. Download the complete binary ZIP from the [5.2 release](https://github.com/AVMLOVER/FlightPatch/releases/tag/v5.2); GitHub's automatic source archives do not contain the built executables or DLL payloads.
+Version 5.2 adds explicit /cishim servicing with no build-number check, based on the zero-expiry callback principle in cishim, and a separate experimental /slshim licensing-layer replacement with offline restore. SLShim includes interface profiles for the supplied Vista, Windows 7, Windows 8, Windows 8.1, and newer preview samples. The Build 15058 boundary for ordinary image/SPP workflows is restored: newer images only have LicensingUI.exe renamed and receive a prompt to use /cishim. The per-SKU SPP donor layout and the 10587 Legacy memtest.exe support are retained. SLShim remains an experimental feature; destination-system boot and expiry behavior still need testing. Download the complete binary ZIP from the [5.2 release, tag v5.2.0](https://github.com/AVMLOVER/FlightPatch/releases/tag/v5.2.0); GitHub's automatic source archives do not contain the built executables or DLL payloads. The earlier v5.2 tag remains the original experimental preview.
 
 NT Timebomb Patch is an offline command-line tool for Windows prerelease images. It replaces NT6 licensing tokens and optional Branding, services older FlightSigned boot files, processes installation media, and rebuilds BIOS/UEFI ISOs with Microsoft OSCDIMG. The former FlightPatch command name remains available as a compatibility launcher.
 
 ## Requirements and permissions
 
-Extract the complete ZIP. Run nttimebomb.cmd from an elevated Command Prompt on Windows, or a LocalSystem command prompt in Windows PE. The launcher selects the x86 or x64 executable for the current environment. The target architecture is detected separately. Use local drive paths shorter than MAX_PATH and quote paths containing spaces.
+Extract the complete ZIP into a new directory. Run nttimebomb.cmd from an elevated Command Prompt on Windows, or a LocalSystem command prompt in Windows PE. The launcher selects the x86 or x64 executable for the current environment. The target architecture is detected separately. Use local drive paths shorter than MAX_PATH and quote paths containing spaces.
 
 For protected files, open a new privileged prompt with NSudo, change to the tool directory, and run the command there. Administrator elevation with backup and restore privileges is normally sufficient on Windows. In WinPE, use SYSTEM.
 
@@ -41,7 +41,7 @@ The patch changes a signed system binary; it does not regenerate Microsoft's sig
 
 Use `/slshim` to install an independent replacement for the Windows licensing
 client layer into a mounted or deployed **offline** Windows root. This is the
-full replacement mode: it disables the target's SPP services and installs a
+full replacement mode: it disables the target's existing licensing services and installs a
 dedicated LocalSystem service. It is separate from donor-based `/spp` replacement.
 No donor directory, product key, tokens.dat, or additional switch is required.
 
@@ -59,9 +59,22 @@ architecture, so the x86 executable can service an offline x64 image. Native
 ARM64 targets are not supported by this mode.
 
 The installer checks the original export names and ordinals before allowing a
-replacement. The supplied 17746 and 29698 preview interfaces are covered for x64
-and their x86 SysWOW64 companions. Matching is based on the DLL interface, rather
-than a minimum or maximum Build check; an unverified interface is rejected.
+replacement. These interface profiles are included:
+
+| Supplied sample | EditionID | Licensing services present | ProductPolicy expiration entry |
+| --- | --- | --- | --- |
+| Vista 5483 | BusinessN | SLSvc, SLUINotify | Kernel-ExpirationDate: 2007-05-31 |
+| Windows 7 6946 | Ultimate | sppsvc, sppuinotify | Kernel-ExpirationDate: 2009-07-01 |
+| Windows 8 8032 | Ultimate | sppsvc | Not present in the supplied policy |
+| Windows 8.1 9431 | Enterprise | sppsvc | Not present in the supplied policy |
+| Windows 10 17746 | Professional | Existing SPP services | Not present in the supplied policy |
+| Windows 11 29698 | ProfessionalWorkstation | Existing SPP services | Not present in the supplied policy |
+
+The supplied sets contain native x64 DLLs and their x86 SysWOW64 companions.
+Matching is based on the DLL interface, rather than a minimum or maximum Build
+check; an unverified interface is rejected. A profile identifies an analyzed
+interface and does not establish that every consumer or expiry mechanism in that
+Windows build has been tested.
 The numeric payload subdirectories identify the analyzed interface profiles.
 Do not rename them or mix DLLs from another package. Payload fingerprints are
 checked before deployment.
@@ -76,12 +89,28 @@ original module's export names and ordinals and load the matching
 and attributes are retained. Added runtime DLLs are TrustedInstaller-owned and
 readable/executable by users.
 
+Vista 5483 supplies `slc.dll`, `slcext.dll`, and `slwga.dll`; missing `sppc.dll`
+and `sppcext.dll` is expected for this set. The installer handles those existing
+supported modules. `slcc.dll` remains the original COM component. This mode does
+not replace every file whose name starts with `sl` or `spp`.
+
+The target runtime imports only KERNEL32 and ADVAPI32 and has no UCRT or MSVCRT
+dependency. Its required imported entry points were checked against the supplied
+5483 DLLs for both architectures. The servicing executable still runs from the
+Windows 10 / WinPE 10 or newer host described above; this import check does not
+replace a booted-target compatibility test.
+
 The offline SYSTEM hive supplies that target SKU's ProductPolicy. The shim
 preserves its feature policies, removes an exact `Kernel-ExpirationDate` entry
-if present, and clears `Kernel-NonGenuineNotificationType` if present. The cache
-is stored in the protected `SYSTEM\NTTimebombSLShim` key. Both supplied previews
-have no expiration entry in ProductPolicy, so this step alone is not evidence
-that CI build expiry has been removed. `/cishim` remains a separate command:
+if present, and clears `Kernel-NonGenuineNotificationType` if present. During
+installation the resulting policy is written into each selected offline control
+set, so an older kernel can read it before the shim service starts. The same
+policy is cached in the protected `SYSTEM\NTTimebombSLShim` key for the service
+refresh path after boot. Other SKU feature policies are retained.
+
+An absent expiration entry does not establish that the build has no other expiry
+checks. `/cishim` remains a separate command for a supported CI structure. For a
+newer preview with a verified CI interface, such as the supplied 17746 or 29698:
 
 ~~~bat
 nttimebomb.cmd /cishim D:\Mount
@@ -89,8 +118,10 @@ nttimebomb.cmd /slshim D:\Mount
 dism /Unmount-Image /MountDir:D:\Mount /Commit
 ~~~
 
-The target's existing `sppsvc` and `sppuinotify` services are disabled. A dedicated
-`NTTimebombSLShim` svchost group and service are created; the service maintains
+The installer detects the target's existing `sppsvc`, `sppuinotify`, `SLSvc`, and
+`SLUINotify` services and disables those present. At least one core licensing
+service (`sppsvc` or `SLSvc`) is required; absent services are not created. A dedicated
+`NTTimebombSLShim` svchost group and service are created; the service is configured to maintain
 the cached kernel policy after the target boots. It does not share the
 DcomLaunch group and does not change Office's `osppsvc`. The local runtime
 reports licensed/genuine status and answers policy queries from that SKU's
@@ -98,21 +129,31 @@ cache. Unknown policies return an error. Unsupported activation, ticket, COM,
 and other private interfaces return an explicit unsupported result; this mode
 does not issue a Microsoft digital license or implement online activation.
 
+Runtime policy refresh still needs a target-system test. Private registry probes
+on this host completed snapshot saving and editing, but the RegRestoreKey step
+failed in x86, x64, and native ARM64 probes; the cause is not established.
+See `TESTING.md` for the results. Actual SCM startup, boot, OOBE, sign-in, and
+behavior after expiry remain unverified in a destination VM.
+
 ### SLShim backup and restore
 
 Before target files are published, originals are copied to
 `OFFLINE_ROOT\NTTimebombBackup\SLShim`. Keep that directory with the image.
 It contains verified original DLLs and hives, original file metadata, and the
 deployment manifest. Existing original backups are not overwritten. Repeating
-an intact installation reports that it is already installed. An interrupted
-prepared deployment can be restored with the same command shown below.
+an intact installation reports that it is already installed after validating the
+installed DLLs, cached policy, current control-set ProductPolicy, and critical
+service and svchost-group settings. A stale original expiration policy or an
+incomplete configuration is rejected instead of being reported as installed.
+An interrupted prepared deployment can be restored with the same command shown
+below.
 
 ~~~bat
 nttimebomb.cmd /slshim-restore D:\Mount
 ~~~
 
 Restore puts back the original DLLs and removes the added runtime DLLs. It
-restores the saved SPP service start settings and ProductPolicy, and removes
+restores the saved licensing service start settings and ProductPolicy, and removes
 the shim service, cache, and svchost group. It edits the current offline hives
 instead of copying an old complete hive over them, preserving unrelated registry
 changes made since installation. The initial ProductPolicy snapshot itself is
@@ -120,6 +161,17 @@ restored. Unknown changed licensing DLLs or a changed OS edition/build stop
 restore to avoid downgrading a serviced installation. Backups remain after a
 successful restore. Archive the restored `SLShim` backup directory before a
 fresh installation; the tool deliberately does not replace its original backup.
+
+Windows may create another LastKnownGood control set after installation. Restore
+also discovers additional control sets containing the recognizably owned shim
+service. A set with the same ID in the complete original SYSTEM backup uses
+its own saved policy and service settings, including a set that was unselected
+at installation. A genuinely new clone can use a saved source only when the
+original selected source sets have identical ProductPolicy bytes and identical
+presence/start settings for all four licensing services.
+If those sources differ, restore stops before publishing files rather than
+guessing which original belongs to the clone. Original control sets that Windows
+has pruned are skipped; restore does not recreate deleted control-set trees.
 
 `/slshim` accepts an offline directory only. It does not implicitly run from
 `/image`, `/media`, or `/spponly`, and it does not process WIM/ISO filenames or
@@ -383,10 +435,16 @@ python tools/package.py D:\Output\nt-timebomb-patch-v5.2-winpe.zip
 ~~~
 
 Maintainers extending the interface profiles can run
-`python tools/inspect-slshim-abi.py D:\17746 D:\29698` on original extracted
-native and SysWOW64 DLL sets. That optional inspection requires `pefile` and
-`capstone`; it verifies the original exports and x86 stack cleanup widths and
-regenerates the committed ABI facts/stubs. Adding an export to a definition does
-not implement its behavior. Rebuild payloads and both executables afterward.
+`python tools/inspect-slshim-abi.py D:\5483 D:\6946 D:\8032 D:\9431` on original
+extracted native and SysWOW64 DLL sets. Existing profiles are retained while
+the supplied profiles are updated. This optional inspection requires `pefile`
+and `capstone`; it checks exports and regenerates the ABI facts/stubs. Named
+interfaces reuse maintained calling-convention contracts. Protected older code
+contains RET-based local jumps and inline data, so scanning arbitrary RET
+instructions does not establish parameter counts. New ordinal interfaces need
+verified return conventions; unknown widths stop generation. Adding an export
+to a definition does not implement its behavior. The payload builder and packager
+enumerate the committed profiles automatically. Rebuild payloads and both
+executables afterward.
 
 Exit codes are 0 for success, 1 for operation failure, 2 for invalid arguments, and 3 for missing required privileges. Preserve any reported remaining mount or backup paths when reporting a failure.
