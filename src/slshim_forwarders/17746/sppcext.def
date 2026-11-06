@@ -1,0 +1,23 @@
+LIBRARY sppcext.dll
+EXPORTS
+  DllCanUnloadNow=nttp-slshim.DllCanUnloadNow @2
+  DllGetClassObject=nttp-slshim.DllGetClassObject @3
+  SLAcquireGenuineTicket=nttp-slshim.SLAcquireGenuineTicket @4
+  SLAcquireGenuineTicketForAppId=nttp-slshim.SLAcquireGenuineTicketForAppId @1
+  SLActivateProduct=nttp-slshim.SLActivateProduct @5
+  SLDepositTokenActivationResponse=nttp-slshim.SLDepositTokenActivationResponse @6
+  SLFreeTokenActivationCertificates=nttp-slshim.SLFreeTokenActivationCertificates @7
+  SLFreeTokenActivationGrants=nttp-slshim.SLFreeTokenActivationGrants @8
+  SLGenerateTokenActivationChallenge=nttp-slshim.SLGenerateTokenActivationChallenge @9
+  SLGetGenuineInformationEx=nttp-slshim.SLGetGenuineInformationEx @10
+  SLGetPackageProductKey=nttp-slshim.SLGetPackageProductKey @11
+  SLGetPackageProperties=nttp-slshim.SLGetPackageProperties @12
+  SLGetPackageToken=nttp-slshim.SLGetPackageToken @13
+  SLGetReferralInformation=nttp-slshim.SLGetReferralInformation @14
+  SLGetServerStatus=nttp-slshim.SLGetServerStatus @15
+  SLGetTokenActivationCertificates=nttp-slshim.SLGetTokenActivationCertificates @16
+  SLGetTokenActivationGrants=nttp-slshim.SLGetTokenActivationGrants @17
+  SLInitialize=nttp-slshim.SLInitialize @18
+  SLInstallPackage=nttp-slshim.SLInstallPackage @19
+  SLSignTokenActivationChallenge=nttp-slshim.SLSignTokenActivationChallenge @20
+  SLUninstallPackage=nttp-slshim.SLUninstallPackage @21

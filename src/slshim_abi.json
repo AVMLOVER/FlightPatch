@@ -1,0 +1,1514 @@
+{
+  "arity": {
+    "DllCanUnloadNow": 0,
+    "DllGetClassObject": 3,
+    "SLAcquireGenuineTicket": 5,
+    "SLAcquireGenuineTicketForAppId": 1,
+    "SLActivateProduct": 7,
+    "SLCallServer": 5,
+    "SLClose": 1,
+    "SLConsumeRight": 5,
+    "SLConsumeWindowsRight": 1,
+    "SLDepositMigrationBlob": 1,
+    "SLDepositOfflineConfirmationId": 4,
+    "SLDepositOfflineConfirmationIdEx": 5,
+    "SLDepositStoreToken": 3,
+    "SLDepositTokenActivationResponse": 8,
+    "SLFireEvent": 3,
+    "SLFreeTokenActivationCertificates": 1,
+    "SLFreeTokenActivationGrants": 1,
+    "SLGatherMigrationBlob": 3,
+    "SLGatherMigrationBlobEx": 3,
+    "SLGenerateOfflineInstallationId": 3,
+    "SLGenerateOfflineInstallationIdEx": 4,
+    "SLGenerateTokenActivationChallenge": 4,
+    "SLGetActiveLicenseInfo": 4,
+    "SLGetApplicationInformation": 6,
+    "SLGetApplicationPolicy": 5,
+    "SLGetAuthenticationResult": 3,
+    "SLGetEncryptedPIDEx": 4,
+    "SLGetGenuineInformation": 5,
+    "SLGetGenuineInformationEx": 5,
+    "SLGetInstalledProductKeyIds": 4,
+    "SLGetLicense": 4,
+    "SLGetLicenseFileId": 4,
+    "SLGetLicenseInformation": 6,
+    "SLGetLicensingStatusInformation": 6,
+    "SLGetPKeyId": 6,
+    "SLGetPKeyInformation": 6,
+    "SLGetPackageProductKey": 3,
+    "SLGetPackageProperties": 4,
+    "SLGetPackageToken": 4,
+    "SLGetPolicyInformation": 5,
+    "SLGetPolicyInformationDWORD": 3,
+    "SLGetProductSkuInformation": 6,
+    "SLGetReferralInformation": 5,
+    "SLGetSLIDList": 6,
+    "SLGetServerStatus": 5,
+    "SLGetServiceInformation": 5,
+    "SLGetTokenActivationCertificates": 3,
+    "SLGetTokenActivationGrants": 3,
+    "SLGetWindowsInformation": 4,
+    "SLGetWindowsInformationDWORD": 2,
+    "SLInitialize": 0,
+    "SLInstallLicense": 4,
+    "SLInstallPackage": 6,
+    "SLInstallProofOfPurchase": 6,
+    "SLInstallProofOfPurchaseEx": 8,
+    "SLIsGenuineLocal": 3,
+    "SLIsGenuineLocalEx": 3,
+    "SLIsWindowsGenuineLocal": 1,
+    "SLLoadApplicationPolicies": 4,
+    "SLOpen": 1,
+    "SLPersistApplicationPolicies": 3,
+    "SLPersistRTSPayloadOverride": 5,
+    "SLReArm": 4,
+    "SLReArmWindows": 0,
+    "SLRegisterEvent": 4,
+    "SLRegisterPlugin": 3,
+    "SLRegisterWindowsEvent": 2,
+    "SLSetAuthenticationData": 3,
+    "SLSetCurrentProductKey": 3,
+    "SLSetGenuineInformation": 5,
+    "SLSignTokenActivationChallenge": 9,
+    "SLUninstallLicense": 2,
+    "SLUninstallPackage": 5,
+    "SLUninstallProofOfPurchase": 2,
+    "SLUnloadApplicationPolicies": 2,
+    "SLUnregisterEvent": 4,
+    "SLUnregisterPlugin": 2,
+    "SLUnregisterWindowsEvent": 2,
+    "SLpAuthenticateGenuineTicketResponse": 8,
+    "SLpBeginGenuineTicketTransaction": 4,
+    "SLpCheckProductKey": 2,
+    "SLpClearActivationInProgress": 2,
+    "SLpDepositDownlevelGenuineTicket": 4,
+    "SLpDepositTokenActivationResponse": 6,
+    "SLpGenerateTokenActivationChallenge": 4,
+    "SLpGetGenuineBlob": 5,
+    "SLpGetGenuineLocal": 3,
+    "SLpGetLicenseAcquisitionInfo": 7,
+    "SLpGetMSPidInformation": 10,
+    "SLpGetMachineUGUID": 2,
+    "SLpGetTokenActivationGrantInfo": 6,
+    "SLpIAActivateProduct": 2,
+    "SLpIsCurrentInstalledProductKeyDefaultKey": 2,
+    "SLpProcessVMPipeMessage": 5,
+    "SLpSetActivationInProgress": 2,
+    "SLpTriggerServiceWorker": 4,
+    "SLpUpdateComponentTokens": 2,
+    "SLpVLActivateProduct": 2,
+    "nttp_ordinal_slwga_227": 2
+  },
+  "profiles": {
+    "17746": {
+      "slc": [
+        {
+          "name": "SLClose",
+          "core_name": "SLClose",
+          "ordinal": 4
+        },
+        {
+          "name": "SLConsumeRight",
+          "core_name": "SLConsumeRight",
+          "ordinal": 5
+        },
+        {
+          "name": "SLConsumeWindowsRight",
+          "core_name": "SLConsumeWindowsRight",
+          "ordinal": 6
+        },
+        {
+          "name": "SLDepositOfflineConfirmationId",
+          "core_name": "SLDepositOfflineConfirmationId",
+          "ordinal": 7
+        },
+        {
+          "name": "SLDepositOfflineConfirmationIdEx",
+          "core_name": "SLDepositOfflineConfirmationIdEx",
+          "ordinal": 8
+        },
+        {
+          "name": "SLFireEvent",
+          "core_name": "SLFireEvent",
+          "ordinal": 9
+        },
+        {
+          "name": "SLGenerateOfflineInstallationId",
+          "core_name": "SLGenerateOfflineInstallationId",
+          "ordinal": 10
+        },
+        {
+          "name": "SLGenerateOfflineInstallationIdEx",
+          "core_name": "SLGenerateOfflineInstallationIdEx",
+          "ordinal": 11
+        },
+        {
+          "name": "SLGetApplicationInformation",
+          "core_name": "SLGetApplicationInformation",
+          "ordinal": 12
+        },
+        {
+          "name": "SLGetGenuineInformation",
+          "core_name": "SLGetGenuineInformation",
+          "ordinal": 13
+        },
+        {
+          "name": "SLGetInstalledProductKeyIds",
+          "core_name": "SLGetInstalledProductKeyIds",
+          "ordinal": 14
+        },
+        {
+          "name": "SLGetLicense",
+          "core_name": "SLGetLicense",
+          "ordinal": 15
+        },
+        {
+          "name": "SLGetLicenseFileId",
+          "core_name": "SLGetLicenseFileId",
+          "ordinal": 16
+        },
+        {
+          "name": "SLGetLicenseInformation",
+          "core_name": "SLGetLicenseInformation",
+          "ordinal": 17
+        },
+        {
+          "name": "SLGetLicensingStatusInformation",
+          "core_name": "SLGetLicensingStatusInformation",
+          "ordinal": 18
+        },
+        {
+          "name": "SLGetPKeyId",
+          "core_name": "SLGetPKeyId",
+          "ordinal": 19
+        },
+        {
+          "name": "SLGetPKeyInformation",
+          "core_name": "SLGetPKeyInformation",
+          "ordinal": 20
+        },
+        {
+          "name": "SLGetPolicyInformation",
+          "core_name": "SLGetPolicyInformation",
+          "ordinal": 21
+        },
+        {
+          "name": "SLGetPolicyInformationDWORD",
+          "core_name": "SLGetPolicyInformationDWORD",
+          "ordinal": 22
+        },
+        {
+          "name": "SLGetProductSkuInformation",
+          "core_name": "SLGetProductSkuInformation",
+          "ordinal": 23
+        },
+        {
+          "name": "SLGetSLIDList",
+          "core_name": "SLGetSLIDList",
+          "ordinal": 24
+        },
+        {
+          "name": "SLGetServiceInformation",
+          "core_name": "SLGetServiceInformation",
+          "ordinal": 25
+        },
+        {
+          "name": "SLGetWindowsInformation",
+          "core_name": "SLGetWindowsInformation",
+          "ordinal": 26
+        },
+        {
+          "name": "SLGetWindowsInformationDWORD",
+          "core_name": "SLGetWindowsInformationDWORD",
+          "ordinal": 27
+        },
+        {
+          "name": "SLInstallLicense",
+          "core_name": "SLInstallLicense",
+          "ordinal": 28
+        },
+        {
+          "name": "SLInstallProofOfPurchase",
+          "core_name": "SLInstallProofOfPurchase",
+          "ordinal": 29
+        },
+        {
+          "name": "SLIsWindowsGenuineLocal",
+          "core_name": "SLIsWindowsGenuineLocal",
+          "ordinal": 30
+        },
+        {
+          "name": "SLOpen",
+          "core_name": "SLOpen",
+          "ordinal": 31
+        },
+        {
+          "name": "SLReArmWindows",
+          "core_name": "SLReArmWindows",
+          "ordinal": 32
+        },
+        {
+          "name": "SLRegisterEvent",
+          "core_name": "SLRegisterEvent",
+          "ordinal": 33
+        },
+        {
+          "name": "SLRegisterWindowsEvent",
+          "core_name": "SLRegisterWindowsEvent",
+          "ordinal": 34
+        },
+        {
+          "name": "SLSetCurrentProductKey",
+          "core_name": "SLSetCurrentProductKey",
+          "ordinal": 35
+        },
+        {
+          "name": "SLSetGenuineInformation",
+          "core_name": "SLSetGenuineInformation",
+          "ordinal": 36
+        },
+        {
+          "name": "SLUninstallLicense",
+          "core_name": "SLUninstallLicense",
+          "ordinal": 37
+        },
+        {
+          "name": "SLUninstallProofOfPurchase",
+          "core_name": "SLUninstallProofOfPurchase",
+          "ordinal": 38
+        },
+        {
+          "name": "SLUnregisterEvent",
+          "core_name": "SLUnregisterEvent",
+          "ordinal": 39
+        },
+        {
+          "name": "SLUnregisterWindowsEvent",
+          "core_name": "SLUnregisterWindowsEvent",
+          "ordinal": 40
+        },
+        {
+          "name": "SLpCheckProductKey",
+          "core_name": "SLpCheckProductKey",
+          "ordinal": 1
+        },
+        {
+          "name": "SLpGetGenuineLocal",
+          "core_name": "SLpGetGenuineLocal",
+          "ordinal": 2
+        },
+        {
+          "name": "SLpUpdateComponentTokens",
+          "core_name": "SLpUpdateComponentTokens",
+          "ordinal": 3
+        }
+      ],
+      "slcext": [
+        {
+          "name": "SLAcquireGenuineTicket",
+          "core_name": "SLAcquireGenuineTicket",
+          "ordinal": 1
+        },
+        {
+          "name": "SLActivateProduct",
+          "core_name": "SLActivateProduct",
+          "ordinal": 2
+        },
+        {
+          "name": "SLGetPackageProductKey",
+          "core_name": "SLGetPackageProductKey",
+          "ordinal": 3
+        },
+        {
+          "name": "SLGetPackageProperties",
+          "core_name": "SLGetPackageProperties",
+          "ordinal": 4
+        },
+        {
+          "name": "SLGetPackageToken",
+          "core_name": "SLGetPackageToken",
+          "ordinal": 5
+        },
+        {
+          "name": "SLGetReferralInformation",
+          "core_name": "SLGetReferralInformation",
+          "ordinal": 6
+        },
+        {
+          "name": "SLGetServerStatus",
+          "core_name": "SLGetServerStatus",
+          "ordinal": 7
+        },
+        {
+          "name": "SLInstallPackage",
+          "core_name": "SLInstallPackage",
+          "ordinal": 8
+        },
+        {
+          "name": "SLUninstallPackage",
+          "core_name": "SLUninstallPackage",
+          "ordinal": 9
+        }
+      ],
+      "sppc": [
+        {
+          "name": "SLCallServer",
+          "core_name": "SLCallServer",
+          "ordinal": 1
+        },
+        {
+          "name": "SLClose",
+          "core_name": "SLClose",
+          "ordinal": 19
+        },
+        {
+          "name": "SLConsumeRight",
+          "core_name": "SLConsumeRight",
+          "ordinal": 20
+        },
+        {
+          "name": "SLDepositMigrationBlob",
+          "core_name": "SLDepositMigrationBlob",
+          "ordinal": 21
+        },
+        {
+          "name": "SLDepositOfflineConfirmationId",
+          "core_name": "SLDepositOfflineConfirmationId",
+          "ordinal": 22
+        },
+        {
+          "name": "SLDepositOfflineConfirmationIdEx",
+          "core_name": "SLDepositOfflineConfirmationIdEx",
+          "ordinal": 23
+        },
+        {
+          "name": "SLDepositStoreToken",
+          "core_name": "SLDepositStoreToken",
+          "ordinal": 24
+        },
+        {
+          "name": "SLFireEvent",
+          "core_name": "SLFireEvent",
+          "ordinal": 25
+        },
+        {
+          "name": "SLGatherMigrationBlob",
+          "core_name": "SLGatherMigrationBlob",
+          "ordinal": 26
+        },
+        {
+          "name": "SLGatherMigrationBlobEx",
+          "core_name": "SLGatherMigrationBlobEx",
+          "ordinal": 27
+        },
+        {
+          "name": "SLGenerateOfflineInstallationId",
+          "core_name": "SLGenerateOfflineInstallationId",
+          "ordinal": 28
+        },
+        {
+          "name": "SLGenerateOfflineInstallationIdEx",
+          "core_name": "SLGenerateOfflineInstallationIdEx",
+          "ordinal": 29
+        },
+        {
+          "name": "SLGetActiveLicenseInfo",
+          "core_name": "SLGetActiveLicenseInfo",
+          "ordinal": 30
+        },
+        {
+          "name": "SLGetApplicationInformation",
+          "core_name": "SLGetApplicationInformation",
+          "ordinal": 31
+        },
+        {
+          "name": "SLGetApplicationPolicy",
+          "core_name": "SLGetApplicationPolicy",
+          "ordinal": 32
+        },
+        {
+          "name": "SLGetAuthenticationResult",
+          "core_name": "SLGetAuthenticationResult",
+          "ordinal": 33
+        },
+        {
+          "name": "SLGetEncryptedPIDEx",
+          "core_name": "SLGetEncryptedPIDEx",
+          "ordinal": 34
+        },
+        {
+          "name": "SLGetGenuineInformation",
+          "core_name": "SLGetGenuineInformation",
+          "ordinal": 35
+        },
+        {
+          "name": "SLGetInstalledProductKeyIds",
+          "core_name": "SLGetInstalledProductKeyIds",
+          "ordinal": 36
+        },
+        {
+          "name": "SLGetLicense",
+          "core_name": "SLGetLicense",
+          "ordinal": 37
+        },
+        {
+          "name": "SLGetLicenseFileId",
+          "core_name": "SLGetLicenseFileId",
+          "ordinal": 38
+        },
+        {
+          "name": "SLGetLicenseInformation",
+          "core_name": "SLGetLicenseInformation",
+          "ordinal": 39
+        },
+        {
+          "name": "SLGetLicensingStatusInformation",
+          "core_name": "SLGetLicensingStatusInformation",
+          "ordinal": 40
+        },
+        {
+          "name": "SLGetPKeyId",
+          "core_name": "SLGetPKeyId",
+          "ordinal": 41
+        },
+        {
+          "name": "SLGetPKeyInformation",
+          "core_name": "SLGetPKeyInformation",
+          "ordinal": 42
+        },
+        {
+          "name": "SLGetPolicyInformation",
+          "core_name": "SLGetPolicyInformation",
+          "ordinal": 43
+        },
+        {
+          "name": "SLGetPolicyInformationDWORD",
+          "core_name": "SLGetPolicyInformationDWORD",
+          "ordinal": 44
+        },
+        {
+          "name": "SLGetProductSkuInformation",
+          "core_name": "SLGetProductSkuInformation",
+          "ordinal": 45
+        },
+        {
+          "name": "SLGetSLIDList",
+          "core_name": "SLGetSLIDList",
+          "ordinal": 46
+        },
+        {
+          "name": "SLGetServiceInformation",
+          "core_name": "SLGetServiceInformation",
+          "ordinal": 47
+        },
+        {
+          "name": "SLInstallLicense",
+          "core_name": "SLInstallLicense",
+          "ordinal": 48
+        },
+        {
+          "name": "SLInstallProofOfPurchase",
+          "core_name": "SLInstallProofOfPurchase",
+          "ordinal": 49
+        },
+        {
+          "name": "SLInstallProofOfPurchaseEx",
+          "core_name": "SLInstallProofOfPurchaseEx",
+          "ordinal": 50
+        },
+        {
+          "name": "SLIsGenuineLocalEx",
+          "core_name": "SLIsGenuineLocalEx",
+          "ordinal": 51
+        },
+        {
+          "name": "SLLoadApplicationPolicies",
+          "core_name": "SLLoadApplicationPolicies",
+          "ordinal": 52
+        },
+        {
+          "name": "SLOpen",
+          "core_name": "SLOpen",
+          "ordinal": 53
+        },
+        {
+          "name": "SLPersistApplicationPolicies",
+          "core_name": "SLPersistApplicationPolicies",
+          "ordinal": 54
+        },
+        {
+          "name": "SLPersistRTSPayloadOverride",
+          "core_name": "SLPersistRTSPayloadOverride",
+          "ordinal": 55
+        },
+        {
+          "name": "SLReArm",
+          "core_name": "SLReArm",
+          "ordinal": 56
+        },
+        {
+          "name": "SLRegisterEvent",
+          "core_name": "SLRegisterEvent",
+          "ordinal": 57
+        },
+        {
+          "name": "SLRegisterPlugin",
+          "core_name": "SLRegisterPlugin",
+          "ordinal": 58
+        },
+        {
+          "name": "SLSetAuthenticationData",
+          "core_name": "SLSetAuthenticationData",
+          "ordinal": 59
+        },
+        {
+          "name": "SLSetCurrentProductKey",
+          "core_name": "SLSetCurrentProductKey",
+          "ordinal": 60
+        },
+        {
+          "name": "SLSetGenuineInformation",
+          "core_name": "SLSetGenuineInformation",
+          "ordinal": 61
+        },
+        {
+          "name": "SLUninstallLicense",
+          "core_name": "SLUninstallLicense",
+          "ordinal": 62
+        },
+        {
+          "name": "SLUninstallProofOfPurchase",
+          "core_name": "SLUninstallProofOfPurchase",
+          "ordinal": 63
+        },
+        {
+          "name": "SLUnloadApplicationPolicies",
+          "core_name": "SLUnloadApplicationPolicies",
+          "ordinal": 64
+        },
+        {
+          "name": "SLUnregisterEvent",
+          "core_name": "SLUnregisterEvent",
+          "ordinal": 65
+        },
+        {
+          "name": "SLUnregisterPlugin",
+          "core_name": "SLUnregisterPlugin",
+          "ordinal": 66
+        },
+        {
+          "name": "SLpAuthenticateGenuineTicketResponse",
+          "core_name": "SLpAuthenticateGenuineTicketResponse",
+          "ordinal": 2
+        },
+        {
+          "name": "SLpBeginGenuineTicketTransaction",
+          "core_name": "SLpBeginGenuineTicketTransaction",
+          "ordinal": 3
+        },
+        {
+          "name": "SLpClearActivationInProgress",
+          "core_name": "SLpClearActivationInProgress",
+          "ordinal": 4
+        },
+        {
+          "name": "SLpDepositDownlevelGenuineTicket",
+          "core_name": "SLpDepositDownlevelGenuineTicket",
+          "ordinal": 5
+        },
+        {
+          "name": "SLpDepositTokenActivationResponse",
+          "core_name": "SLpDepositTokenActivationResponse",
+          "ordinal": 6
+        },
+        {
+          "name": "SLpGenerateTokenActivationChallenge",
+          "core_name": "SLpGenerateTokenActivationChallenge",
+          "ordinal": 7
+        },
+        {
+          "name": "SLpGetGenuineBlob",
+          "core_name": "SLpGetGenuineBlob",
+          "ordinal": 8
+        },
+        {
+          "name": "SLpGetGenuineLocal",
+          "core_name": "SLpGetGenuineLocal",
+          "ordinal": 9
+        },
+        {
+          "name": "SLpGetLicenseAcquisitionInfo",
+          "core_name": "SLpGetLicenseAcquisitionInfo",
+          "ordinal": 10
+        },
+        {
+          "name": "SLpGetMSPidInformation",
+          "core_name": "SLpGetMSPidInformation",
+          "ordinal": 11
+        },
+        {
+          "name": "SLpGetMachineUGUID",
+          "core_name": "SLpGetMachineUGUID",
+          "ordinal": 12
+        },
+        {
+          "name": "SLpGetTokenActivationGrantInfo",
+          "core_name": "SLpGetTokenActivationGrantInfo",
+          "ordinal": 13
+        },
+        {
+          "name": "SLpIAActivateProduct",
+          "core_name": "SLpIAActivateProduct",
+          "ordinal": 14
+        },
+        {
+          "name": "SLpProcessVMPipeMessage",
+          "core_name": "SLpProcessVMPipeMessage",
+          "ordinal": 15
+        },
+        {
+          "name": "SLpSetActivationInProgress",
+          "core_name": "SLpSetActivationInProgress",
+          "ordinal": 16
+        },
+        {
+          "name": "SLpTriggerServiceWorker",
+          "core_name": "SLpTriggerServiceWorker",
+          "ordinal": 17
+        },
+        {
+          "name": "SLpVLActivateProduct",
+          "core_name": "SLpVLActivateProduct",
+          "ordinal": 18
+        }
+      ],
+      "sppcext": [
+        {
+          "name": "DllCanUnloadNow",
+          "core_name": "DllCanUnloadNow",
+          "ordinal": 2
+        },
+        {
+          "name": "DllGetClassObject",
+          "core_name": "DllGetClassObject",
+          "ordinal": 3
+        },
+        {
+          "name": "SLAcquireGenuineTicket",
+          "core_name": "SLAcquireGenuineTicket",
+          "ordinal": 4
+        },
+        {
+          "name": "SLAcquireGenuineTicketForAppId",
+          "core_name": "SLAcquireGenuineTicketForAppId",
+          "ordinal": 1
+        },
+        {
+          "name": "SLActivateProduct",
+          "core_name": "SLActivateProduct",
+          "ordinal": 5
+        },
+        {
+          "name": "SLDepositTokenActivationResponse",
+          "core_name": "SLDepositTokenActivationResponse",
+          "ordinal": 6
+        },
+        {
+          "name": "SLFreeTokenActivationCertificates",
+          "core_name": "SLFreeTokenActivationCertificates",
+          "ordinal": 7
+        },
+        {
+          "name": "SLFreeTokenActivationGrants",
+          "core_name": "SLFreeTokenActivationGrants",
+          "ordinal": 8
+        },
+        {
+          "name": "SLGenerateTokenActivationChallenge",
+          "core_name": "SLGenerateTokenActivationChallenge",
+          "ordinal": 9
+        },
+        {
+          "name": "SLGetGenuineInformationEx",
+          "core_name": "SLGetGenuineInformationEx",
+          "ordinal": 10
+        },
+        {
+          "name": "SLGetPackageProductKey",
+          "core_name": "SLGetPackageProductKey",
+          "ordinal": 11
+        },
+        {
+          "name": "SLGetPackageProperties",
+          "core_name": "SLGetPackageProperties",
+          "ordinal": 12
+        },
+        {
+          "name": "SLGetPackageToken",
+          "core_name": "SLGetPackageToken",
+          "ordinal": 13
+        },
+        {
+          "name": "SLGetReferralInformation",
+          "core_name": "SLGetReferralInformation",
+          "ordinal": 14
+        },
+        {
+          "name": "SLGetServerStatus",
+          "core_name": "SLGetServerStatus",
+          "ordinal": 15
+        },
+        {
+          "name": "SLGetTokenActivationCertificates",
+          "core_name": "SLGetTokenActivationCertificates",
+          "ordinal": 16
+        },
+        {
+          "name": "SLGetTokenActivationGrants",
+          "core_name": "SLGetTokenActivationGrants",
+          "ordinal": 17
+        },
+        {
+          "name": "SLInitialize",
+          "core_name": "SLInitialize",
+          "ordinal": 18
+        },
+        {
+          "name": "SLInstallPackage",
+          "core_name": "SLInstallPackage",
+          "ordinal": 19
+        },
+        {
+          "name": "SLSignTokenActivationChallenge",
+          "core_name": "SLSignTokenActivationChallenge",
+          "ordinal": 20
+        },
+        {
+          "name": "SLUninstallPackage",
+          "core_name": "SLUninstallPackage",
+          "ordinal": 21
+        }
+      ],
+      "slwga": [
+        {
+          "name": "SLIsGenuineLocal",
+          "core_name": "SLIsGenuineLocal",
+          "ordinal": 228
+        },
+        {
+          "name": null,
+          "core_name": "nttp_ordinal_slwga_227",
+          "ordinal": 227
+        }
+      ]
+    },
+    "29698": {
+      "slc": [
+        {
+          "name": "SLClose",
+          "core_name": "SLClose",
+          "ordinal": 4
+        },
+        {
+          "name": "SLConsumeRight",
+          "core_name": "SLConsumeRight",
+          "ordinal": 5
+        },
+        {
+          "name": "SLConsumeWindowsRight",
+          "core_name": "SLConsumeWindowsRight",
+          "ordinal": 6
+        },
+        {
+          "name": "SLDepositOfflineConfirmationId",
+          "core_name": "SLDepositOfflineConfirmationId",
+          "ordinal": 7
+        },
+        {
+          "name": "SLDepositOfflineConfirmationIdEx",
+          "core_name": "SLDepositOfflineConfirmationIdEx",
+          "ordinal": 8
+        },
+        {
+          "name": "SLFireEvent",
+          "core_name": "SLFireEvent",
+          "ordinal": 9
+        },
+        {
+          "name": "SLGenerateOfflineInstallationId",
+          "core_name": "SLGenerateOfflineInstallationId",
+          "ordinal": 10
+        },
+        {
+          "name": "SLGenerateOfflineInstallationIdEx",
+          "core_name": "SLGenerateOfflineInstallationIdEx",
+          "ordinal": 11
+        },
+        {
+          "name": "SLGetApplicationInformation",
+          "core_name": "SLGetApplicationInformation",
+          "ordinal": 12
+        },
+        {
+          "name": "SLGetGenuineInformation",
+          "core_name": "SLGetGenuineInformation",
+          "ordinal": 13
+        },
+        {
+          "name": "SLGetInstalledProductKeyIds",
+          "core_name": "SLGetInstalledProductKeyIds",
+          "ordinal": 14
+        },
+        {
+          "name": "SLGetLicense",
+          "core_name": "SLGetLicense",
+          "ordinal": 15
+        },
+        {
+          "name": "SLGetLicenseFileId",
+          "core_name": "SLGetLicenseFileId",
+          "ordinal": 16
+        },
+        {
+          "name": "SLGetLicenseInformation",
+          "core_name": "SLGetLicenseInformation",
+          "ordinal": 17
+        },
+        {
+          "name": "SLGetLicensingStatusInformation",
+          "core_name": "SLGetLicensingStatusInformation",
+          "ordinal": 18
+        },
+        {
+          "name": "SLGetPKeyId",
+          "core_name": "SLGetPKeyId",
+          "ordinal": 19
+        },
+        {
+          "name": "SLGetPKeyInformation",
+          "core_name": "SLGetPKeyInformation",
+          "ordinal": 20
+        },
+        {
+          "name": "SLGetPolicyInformation",
+          "core_name": "SLGetPolicyInformation",
+          "ordinal": 21
+        },
+        {
+          "name": "SLGetPolicyInformationDWORD",
+          "core_name": "SLGetPolicyInformationDWORD",
+          "ordinal": 22
+        },
+        {
+          "name": "SLGetProductSkuInformation",
+          "core_name": "SLGetProductSkuInformation",
+          "ordinal": 23
+        },
+        {
+          "name": "SLGetSLIDList",
+          "core_name": "SLGetSLIDList",
+          "ordinal": 24
+        },
+        {
+          "name": "SLGetServiceInformation",
+          "core_name": "SLGetServiceInformation",
+          "ordinal": 25
+        },
+        {
+          "name": "SLGetWindowsInformation",
+          "core_name": "SLGetWindowsInformation",
+          "ordinal": 26
+        },
+        {
+          "name": "SLGetWindowsInformationDWORD",
+          "core_name": "SLGetWindowsInformationDWORD",
+          "ordinal": 27
+        },
+        {
+          "name": "SLInstallLicense",
+          "core_name": "SLInstallLicense",
+          "ordinal": 28
+        },
+        {
+          "name": "SLInstallProofOfPurchase",
+          "core_name": "SLInstallProofOfPurchase",
+          "ordinal": 29
+        },
+        {
+          "name": "SLIsWindowsGenuineLocal",
+          "core_name": "SLIsWindowsGenuineLocal",
+          "ordinal": 30
+        },
+        {
+          "name": "SLOpen",
+          "core_name": "SLOpen",
+          "ordinal": 31
+        },
+        {
+          "name": "SLReArmWindows",
+          "core_name": "SLReArmWindows",
+          "ordinal": 32
+        },
+        {
+          "name": "SLRegisterEvent",
+          "core_name": "SLRegisterEvent",
+          "ordinal": 33
+        },
+        {
+          "name": "SLRegisterWindowsEvent",
+          "core_name": "SLRegisterWindowsEvent",
+          "ordinal": 34
+        },
+        {
+          "name": "SLSetCurrentProductKey",
+          "core_name": "SLSetCurrentProductKey",
+          "ordinal": 35
+        },
+        {
+          "name": "SLSetGenuineInformation",
+          "core_name": "SLSetGenuineInformation",
+          "ordinal": 36
+        },
+        {
+          "name": "SLUninstallLicense",
+          "core_name": "SLUninstallLicense",
+          "ordinal": 37
+        },
+        {
+          "name": "SLUninstallProofOfPurchase",
+          "core_name": "SLUninstallProofOfPurchase",
+          "ordinal": 38
+        },
+        {
+          "name": "SLUnregisterEvent",
+          "core_name": "SLUnregisterEvent",
+          "ordinal": 39
+        },
+        {
+          "name": "SLUnregisterWindowsEvent",
+          "core_name": "SLUnregisterWindowsEvent",
+          "ordinal": 40
+        },
+        {
+          "name": "SLpCheckProductKey",
+          "core_name": "SLpCheckProductKey",
+          "ordinal": 1
+        },
+        {
+          "name": "SLpGetGenuineLocal",
+          "core_name": "SLpGetGenuineLocal",
+          "ordinal": 2
+        },
+        {
+          "name": "SLpUpdateComponentTokens",
+          "core_name": "SLpUpdateComponentTokens",
+          "ordinal": 3
+        }
+      ],
+      "slcext": [
+        {
+          "name": "SLAcquireGenuineTicket",
+          "core_name": "SLAcquireGenuineTicket",
+          "ordinal": 1
+        },
+        {
+          "name": "SLActivateProduct",
+          "core_name": "SLActivateProduct",
+          "ordinal": 2
+        },
+        {
+          "name": "SLGetPackageProductKey",
+          "core_name": "SLGetPackageProductKey",
+          "ordinal": 3
+        },
+        {
+          "name": "SLGetPackageProperties",
+          "core_name": "SLGetPackageProperties",
+          "ordinal": 4
+        },
+        {
+          "name": "SLGetPackageToken",
+          "core_name": "SLGetPackageToken",
+          "ordinal": 5
+        },
+        {
+          "name": "SLGetReferralInformation",
+          "core_name": "SLGetReferralInformation",
+          "ordinal": 6
+        },
+        {
+          "name": "SLGetServerStatus",
+          "core_name": "SLGetServerStatus",
+          "ordinal": 7
+        },
+        {
+          "name": "SLInstallPackage",
+          "core_name": "SLInstallPackage",
+          "ordinal": 8
+        },
+        {
+          "name": "SLUninstallPackage",
+          "core_name": "SLUninstallPackage",
+          "ordinal": 9
+        }
+      ],
+      "sppc": [
+        {
+          "name": "SLCallServer",
+          "core_name": "SLCallServer",
+          "ordinal": 1
+        },
+        {
+          "name": "SLClose",
+          "core_name": "SLClose",
+          "ordinal": 20
+        },
+        {
+          "name": "SLConsumeRight",
+          "core_name": "SLConsumeRight",
+          "ordinal": 21
+        },
+        {
+          "name": "SLDepositMigrationBlob",
+          "core_name": "SLDepositMigrationBlob",
+          "ordinal": 22
+        },
+        {
+          "name": "SLDepositOfflineConfirmationId",
+          "core_name": "SLDepositOfflineConfirmationId",
+          "ordinal": 23
+        },
+        {
+          "name": "SLDepositOfflineConfirmationIdEx",
+          "core_name": "SLDepositOfflineConfirmationIdEx",
+          "ordinal": 24
+        },
+        {
+          "name": "SLDepositStoreToken",
+          "core_name": "SLDepositStoreToken",
+          "ordinal": 25
+        },
+        {
+          "name": "SLFireEvent",
+          "core_name": "SLFireEvent",
+          "ordinal": 26
+        },
+        {
+          "name": "SLGatherMigrationBlob",
+          "core_name": "SLGatherMigrationBlob",
+          "ordinal": 27
+        },
+        {
+          "name": "SLGatherMigrationBlobEx",
+          "core_name": "SLGatherMigrationBlobEx",
+          "ordinal": 28
+        },
+        {
+          "name": "SLGenerateOfflineInstallationId",
+          "core_name": "SLGenerateOfflineInstallationId",
+          "ordinal": 29
+        },
+        {
+          "name": "SLGenerateOfflineInstallationIdEx",
+          "core_name": "SLGenerateOfflineInstallationIdEx",
+          "ordinal": 30
+        },
+        {
+          "name": "SLGetActiveLicenseInfo",
+          "core_name": "SLGetActiveLicenseInfo",
+          "ordinal": 31
+        },
+        {
+          "name": "SLGetApplicationInformation",
+          "core_name": "SLGetApplicationInformation",
+          "ordinal": 32
+        },
+        {
+          "name": "SLGetApplicationPolicy",
+          "core_name": "SLGetApplicationPolicy",
+          "ordinal": 33
+        },
+        {
+          "name": "SLGetAuthenticationResult",
+          "core_name": "SLGetAuthenticationResult",
+          "ordinal": 34
+        },
+        {
+          "name": "SLGetEncryptedPIDEx",
+          "core_name": "SLGetEncryptedPIDEx",
+          "ordinal": 35
+        },
+        {
+          "name": "SLGetGenuineInformation",
+          "core_name": "SLGetGenuineInformation",
+          "ordinal": 36
+        },
+        {
+          "name": "SLGetInstalledProductKeyIds",
+          "core_name": "SLGetInstalledProductKeyIds",
+          "ordinal": 37
+        },
+        {
+          "name": "SLGetLicense",
+          "core_name": "SLGetLicense",
+          "ordinal": 38
+        },
+        {
+          "name": "SLGetLicenseFileId",
+          "core_name": "SLGetLicenseFileId",
+          "ordinal": 39
+        },
+        {
+          "name": "SLGetLicenseInformation",
+          "core_name": "SLGetLicenseInformation",
+          "ordinal": 40
+        },
+        {
+          "name": "SLGetLicensingStatusInformation",
+          "core_name": "SLGetLicensingStatusInformation",
+          "ordinal": 41
+        },
+        {
+          "name": "SLGetPKeyId",
+          "core_name": "SLGetPKeyId",
+          "ordinal": 42
+        },
+        {
+          "name": "SLGetPKeyInformation",
+          "core_name": "SLGetPKeyInformation",
+          "ordinal": 43
+        },
+        {
+          "name": "SLGetPolicyInformation",
+          "core_name": "SLGetPolicyInformation",
+          "ordinal": 44
+        },
+        {
+          "name": "SLGetPolicyInformationDWORD",
+          "core_name": "SLGetPolicyInformationDWORD",
+          "ordinal": 45
+        },
+        {
+          "name": "SLGetProductSkuInformation",
+          "core_name": "SLGetProductSkuInformation",
+          "ordinal": 46
+        },
+        {
+          "name": "SLGetSLIDList",
+          "core_name": "SLGetSLIDList",
+          "ordinal": 47
+        },
+        {
+          "name": "SLGetServiceInformation",
+          "core_name": "SLGetServiceInformation",
+          "ordinal": 48
+        },
+        {
+          "name": "SLInstallLicense",
+          "core_name": "SLInstallLicense",
+          "ordinal": 49
+        },
+        {
+          "name": "SLInstallProofOfPurchase",
+          "core_name": "SLInstallProofOfPurchase",
+          "ordinal": 50
+        },
+        {
+          "name": "SLInstallProofOfPurchaseEx",
+          "core_name": "SLInstallProofOfPurchaseEx",
+          "ordinal": 51
+        },
+        {
+          "name": "SLIsGenuineLocalEx",
+          "core_name": "SLIsGenuineLocalEx",
+          "ordinal": 52
+        },
+        {
+          "name": "SLLoadApplicationPolicies",
+          "core_name": "SLLoadApplicationPolicies",
+          "ordinal": 53
+        },
+        {
+          "name": "SLOpen",
+          "core_name": "SLOpen",
+          "ordinal": 54
+        },
+        {
+          "name": "SLPersistApplicationPolicies",
+          "core_name": "SLPersistApplicationPolicies",
+          "ordinal": 55
+        },
+        {
+          "name": "SLPersistRTSPayloadOverride",
+          "core_name": "SLPersistRTSPayloadOverride",
+          "ordinal": 56
+        },
+        {
+          "name": "SLReArm",
+          "core_name": "SLReArm",
+          "ordinal": 57
+        },
+        {
+          "name": "SLRegisterEvent",
+          "core_name": "SLRegisterEvent",
+          "ordinal": 58
+        },
+        {
+          "name": "SLRegisterPlugin",
+          "core_name": "SLRegisterPlugin",
+          "ordinal": 59
+        },
+        {
+          "name": "SLSetAuthenticationData",
+          "core_name": "SLSetAuthenticationData",
+          "ordinal": 60
+        },
+        {
+          "name": "SLSetCurrentProductKey",
+          "core_name": "SLSetCurrentProductKey",
+          "ordinal": 61
+        },
+        {
+          "name": "SLSetGenuineInformation",
+          "core_name": "SLSetGenuineInformation",
+          "ordinal": 62
+        },
+        {
+          "name": "SLUninstallLicense",
+          "core_name": "SLUninstallLicense",
+          "ordinal": 63
+        },
+        {
+          "name": "SLUninstallProofOfPurchase",
+          "core_name": "SLUninstallProofOfPurchase",
+          "ordinal": 64
+        },
+        {
+          "name": "SLUnloadApplicationPolicies",
+          "core_name": "SLUnloadApplicationPolicies",
+          "ordinal": 65
+        },
+        {
+          "name": "SLUnregisterEvent",
+          "core_name": "SLUnregisterEvent",
+          "ordinal": 66
+        },
+        {
+          "name": "SLUnregisterPlugin",
+          "core_name": "SLUnregisterPlugin",
+          "ordinal": 67
+        },
+        {
+          "name": "SLpAuthenticateGenuineTicketResponse",
+          "core_name": "SLpAuthenticateGenuineTicketResponse",
+          "ordinal": 2
+        },
+        {
+          "name": "SLpBeginGenuineTicketTransaction",
+          "core_name": "SLpBeginGenuineTicketTransaction",
+          "ordinal": 3
+        },
+        {
+          "name": "SLpClearActivationInProgress",
+          "core_name": "SLpClearActivationInProgress",
+          "ordinal": 4
+        },
+        {
+          "name": "SLpDepositDownlevelGenuineTicket",
+          "core_name": "SLpDepositDownlevelGenuineTicket",
+          "ordinal": 5
+        },
+        {
+          "name": "SLpDepositTokenActivationResponse",
+          "core_name": "SLpDepositTokenActivationResponse",
+          "ordinal": 6
+        },
+        {
+          "name": "SLpGenerateTokenActivationChallenge",
+          "core_name": "SLpGenerateTokenActivationChallenge",
+          "ordinal": 7
+        },
+        {
+          "name": "SLpGetGenuineBlob",
+          "core_name": "SLpGetGenuineBlob",
+          "ordinal": 8
+        },
+        {
+          "name": "SLpGetGenuineLocal",
+          "core_name": "SLpGetGenuineLocal",
+          "ordinal": 9
+        },
+        {
+          "name": "SLpGetLicenseAcquisitionInfo",
+          "core_name": "SLpGetLicenseAcquisitionInfo",
+          "ordinal": 10
+        },
+        {
+          "name": "SLpGetMSPidInformation",
+          "core_name": "SLpGetMSPidInformation",
+          "ordinal": 11
+        },
+        {
+          "name": "SLpGetMachineUGUID",
+          "core_name": "SLpGetMachineUGUID",
+          "ordinal": 12
+        },
+        {
+          "name": "SLpGetTokenActivationGrantInfo",
+          "core_name": "SLpGetTokenActivationGrantInfo",
+          "ordinal": 13
+        },
+        {
+          "name": "SLpIAActivateProduct",
+          "core_name": "SLpIAActivateProduct",
+          "ordinal": 14
+        },
+        {
+          "name": "SLpIsCurrentInstalledProductKeyDefaultKey",
+          "core_name": "SLpIsCurrentInstalledProductKeyDefaultKey",
+          "ordinal": 15
+        },
+        {
+          "name": "SLpProcessVMPipeMessage",
+          "core_name": "SLpProcessVMPipeMessage",
+          "ordinal": 16
+        },
+        {
+          "name": "SLpSetActivationInProgress",
+          "core_name": "SLpSetActivationInProgress",
+          "ordinal": 17
+        },
+        {
+          "name": "SLpTriggerServiceWorker",
+          "core_name": "SLpTriggerServiceWorker",
+          "ordinal": 18
+        },
+        {
+          "name": "SLpVLActivateProduct",
+          "core_name": "SLpVLActivateProduct",
+          "ordinal": 19
+        }
+      ],
+      "sppcext": [
+        {
+          "name": "DllCanUnloadNow",
+          "core_name": "DllCanUnloadNow",
+          "ordinal": 2
+        },
+        {
+          "name": "DllGetClassObject",
+          "core_name": "DllGetClassObject",
+          "ordinal": 3
+        },
+        {
+          "name": "SLAcquireGenuineTicket",
+          "core_name": "SLAcquireGenuineTicket",
+          "ordinal": 4
+        },
+        {
+          "name": "SLAcquireGenuineTicketForAppId",
+          "core_name": "SLAcquireGenuineTicketForAppId",
+          "ordinal": 1
+        },
+        {
+          "name": "SLActivateProduct",
+          "core_name": "SLActivateProduct",
+          "ordinal": 5
+        },
+        {
+          "name": "SLDepositTokenActivationResponse",
+          "core_name": "SLDepositTokenActivationResponse",
+          "ordinal": 6
+        },
+        {
+          "name": "SLFreeTokenActivationCertificates",
+          "core_name": "SLFreeTokenActivationCertificates",
+          "ordinal": 7
+        },
+        {
+          "name": "SLFreeTokenActivationGrants",
+          "core_name": "SLFreeTokenActivationGrants",
+          "ordinal": 8
+        },
+        {
+          "name": "SLGenerateTokenActivationChallenge",
+          "core_name": "SLGenerateTokenActivationChallenge",
+          "ordinal": 9
+        },
+        {
+          "name": "SLGetGenuineInformationEx",
+          "core_name": "SLGetGenuineInformationEx",
+          "ordinal": 10
+        },
+        {
+          "name": "SLGetPackageProductKey",
+          "core_name": "SLGetPackageProductKey",
+          "ordinal": 11
+        },
+        {
+          "name": "SLGetPackageProperties",
+          "core_name": "SLGetPackageProperties",
+          "ordinal": 12
+        },
+        {
+          "name": "SLGetPackageToken",
+          "core_name": "SLGetPackageToken",
+          "ordinal": 13
+        },
+        {
+          "name": "SLGetReferralInformation",
+          "core_name": "SLGetReferralInformation",
+          "ordinal": 14
+        },
+        {
+          "name": "SLGetServerStatus",
+          "core_name": "SLGetServerStatus",
+          "ordinal": 15
+        },
+        {
+          "name": "SLGetTokenActivationCertificates",
+          "core_name": "SLGetTokenActivationCertificates",
+          "ordinal": 16
+        },
+        {
+          "name": "SLGetTokenActivationGrants",
+          "core_name": "SLGetTokenActivationGrants",
+          "ordinal": 17
+        },
+        {
+          "name": "SLInitialize",
+          "core_name": "SLInitialize",
+          "ordinal": 18
+        },
+        {
+          "name": "SLInstallPackage",
+          "core_name": "SLInstallPackage",
+          "ordinal": 19
+        },
+        {
+          "name": "SLSignTokenActivationChallenge",
+          "core_name": "SLSignTokenActivationChallenge",
+          "ordinal": 20
+        },
+        {
+          "name": "SLUninstallPackage",
+          "core_name": "SLUninstallPackage",
+          "ordinal": 21
+        }
+      ],
+      "slwga": [
+        {
+          "name": "SLIsGenuineLocal",
+          "core_name": "SLIsGenuineLocal",
+          "ordinal": 228
+        },
+        {
+          "name": null,
+          "core_name": "nttp_ordinal_slwga_227",
+          "ordinal": 227
+        }
+      ]
+    }
+  }
+}

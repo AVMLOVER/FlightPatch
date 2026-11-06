@@ -1,0 +1,11 @@
+LIBRARY slcext.dll
+EXPORTS
+  SLAcquireGenuineTicket=nttp-slshim.SLAcquireGenuineTicket @1
+  SLActivateProduct=nttp-slshim.SLActivateProduct @2
+  SLGetPackageProductKey=nttp-slshim.SLGetPackageProductKey @3
+  SLGetPackageProperties=nttp-slshim.SLGetPackageProperties @4
+  SLGetPackageToken=nttp-slshim.SLGetPackageToken @5
+  SLGetReferralInformation=nttp-slshim.SLGetReferralInformation @6
+  SLGetServerStatus=nttp-slshim.SLGetServerStatus @7
+  SLInstallPackage=nttp-slshim.SLInstallPackage @8
+  SLUninstallPackage=nttp-slshim.SLUninstallPackage @9

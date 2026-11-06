@@ -1,0 +1,6 @@
+/nttimebomb-*.exe
+/as-invoker.res
+/.qa-*.exe
+/slshim/
+/dependencies/*.dll
+__pycache__/

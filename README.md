@@ -1,6 +1,6 @@
-# NT Timebomb Patch 5.1
+# NT Timebomb Patch 5.2 (experimental)
 
-Version 5.1 adds support for the x86 image-hash routine used by the supplied Windows 10 build 10587 Legacy memtest.exe. Its FlightSigned OID reference is loaded into ECX. Existing caller, branch, and unique-match checks still apply.
+Version 5.2 adds explicit /cishim servicing with no build-number check, based on the zero-expiry callback principle in cishim, and a separate experimental /slshim licensing-layer replacement with offline restore. It restores the Build 15058 boundary for ordinary image/SPP workflows: newer images only have LicensingUI.exe renamed and receive a prompt to use /cishim. The per-SKU SPP donor layout and the 10587 Legacy memtest.exe support are retained. This is an experimental preview release; destination-system boot and expiry behavior still need testing. Download the complete binary ZIP from the [5.2 release](https://github.com/AVMLOVER/FlightPatch/releases/tag/v5.2); GitHub's automatic source archives do not contain the built executables or DLL payloads.
 
 NT Timebomb Patch is an offline command-line tool for Windows prerelease images. It replaces NT6 licensing tokens and optional Branding, services older FlightSigned boot files, processes installation media, and rebuilds BIOS/UEFI ISOs with Microsoft OSCDIMG. The former FlightPatch command name remains available as a compatibility launcher.
 
@@ -17,6 +17,117 @@ nttimebomb.cmd /help
 ~~~
 
 WIM servicing uses Windows DISM. ISO creation requires OSCDIMG from the Microsoft Windows ADK. ISO input additionally requires 7z.exe and its runtime files from 7-Zip. Place dependencies beside the executable, add them to PATH, or specify /oscdimg and /7zip. Only ISO extraction requires 7-Zip. Only ISO creation requires OSCDIMG.
+
+## Explicit CI build-expiry patch
+
+Use /cishim with an already mounted or deployed offline Windows root. Supply the directory containing Windows, rather than the ci.dll filename or the Windows directory itself.
+
+~~~bat
+nttimebomb.cmd /cishim D:\Mount
+nttimebomb.cmd /cishim W:\
+~~~
+
+This command processes only Windows\System32\ci.dll. It does not query the Windows build or require ntoskrnl.exe, SPP donors, PDBs, downloads, or a replacement shim at runtime. It leaves LicensingUI.exe, SPP, boot files, hvloader, WinRE, BCD, and kernels unchanged. Run /image first if you also want the normal newer-image LicensingUI rename, then run /cishim explicitly before committing your manually mounted image.
+
+The expiry principle comes from [gailium119/cishim](https://github.com/gailium119/cishim/blob/c0ec25dbcb8e11109e24297c40d72c2ab6b24a8d/cishim/cishim.c): its CiGetBuildExpiryTime callback writes zero to the output and returns success. NT Timebomb Patch implements that behavior independently in the original CI. It identifies the preview's self-image expiry routine and confirms that CiInitialize registers it as a callback. The supplied preview 17746 and 29698 samples use different callback-table slots, both of which are checked structurally. An entry jump redirects to a small leaf routine in verified INT3 padding outside unwind-function ranges; the original unwind tables and other CI callbacks are retained. The full cishim module and its other signature-validation stubs are not bundled.
+
+For these newer preview callbacks, the verified target architecture is x64. Both the x86 and x64 tool executables can process those x64 samples. Existing earlier x86/x64 FlightSigned CI matching remains available under /cishim. A newer native x86 or ARM64 expiry callback is not currently verified and is rejected if its layout is unsupported. No build-number gate does not mean that an unknown machine-code layout can be patched safely: missing anchors, ambiguous matches, or unavailable leaf space cause a failure before writing.
+
+Before the first write, the tool saves ci.dll.nttp-original beside the target CI, verifying its contents and copying owner, group, DACL, inheritance protection, and last-write time. The original CI is then edited in place, retaining its ACL and restoring its read-only attribute. A write failure attempts to restore the original bytes. Existing backups are never overwritten; a conflicting backup stops the write. Re-running /cishim recognizes its existing patch and makes no further changes. Preserve the original backup for offline recovery.
+
+The patch changes a signed system binary; it does not regenerate Microsoft's signature or configure Secure Boot, HVCI, BCD, or the selected boot manager. The target boot chain must accept the modified file. Verification with the supplied preview files checks structural matching, patch bytes, checksum, repeat behavior, permissions, and file scope. Booting an expired preview and confirming MMC/Defender behavior still requires testing in that target system; stock release CI is not evidence of preview-expiry removal.
+
+## Experimental SLShim licensing-layer replacement
+
+Use `/slshim` to install an independent replacement for the Windows licensing
+client layer into a mounted or deployed **offline** Windows root. This is the
+full replacement mode: it disables the target's SPP services and installs a
+dedicated LocalSystem service. It is separate from donor-based `/spp` replacement.
+No donor directory, product key, tokens.dat, or additional switch is required.
+
+~~~bat
+nttimebomb.cmd /slshim D:\Mount
+nttimebomb.cmd /slshim-restore D:\Mount
+~~~
+
+`D:\Mount` must contain `Windows\System32\Config\SYSTEM` and `SOFTWARE`, along
+with the target's original licensing DLLs. A flat extraction such as the analysis
+samples is not a deployable target. Use Windows 10 / WinPE 10 or newer as the
+servicing host. Keep the complete `slshim` and `dependencies` directories beside
+both executables. The tool selects target architecture separately from host
+architecture, so the x86 executable can service an offline x64 image. Native
+ARM64 targets are not supported by this mode.
+
+The installer checks the original export names and ordinals before allowing a
+replacement. The supplied 17746 and 29698 preview interfaces are covered for x64
+and their x86 SysWOW64 companions. Matching is based on the DLL interface, rather
+than a minimum or maximum Build check; an unverified interface is rejected.
+The numeric payload subdirectories identify the analyzed interface profiles.
+Do not rename them or mix DLLs from another package. Payload fingerprints are
+checked before deployment.
+
+This implementation follows the layer-replacement principle in
+[shakenetwork/slshim](https://github.com/shakenetwork/slshim/tree/14bae9b2bf82bd4c28c4172955c0e7c92988ac43),
+with independently written servicing and runtime code. It replaces the existing
+`slc.dll`, `slcext.dll`, `sppc.dll`, `sppcext.dll`, and `slwga.dll` in System32
+and, where present on an x64 target, SysWOW64. Small forwarders preserve each
+original module's export names and ordinals and load the matching
+`nttp-slshim.dll` runtime. Original file owners, groups, DACLs, last-write times,
+and attributes are retained. Added runtime DLLs are TrustedInstaller-owned and
+readable/executable by users.
+
+The offline SYSTEM hive supplies that target SKU's ProductPolicy. The shim
+preserves its feature policies, removes an exact `Kernel-ExpirationDate` entry
+if present, and clears `Kernel-NonGenuineNotificationType` if present. The cache
+is stored in the protected `SYSTEM\NTTimebombSLShim` key. Both supplied previews
+have no expiration entry in ProductPolicy, so this step alone is not evidence
+that CI build expiry has been removed. `/cishim` remains a separate command:
+
+~~~bat
+nttimebomb.cmd /cishim D:\Mount
+nttimebomb.cmd /slshim D:\Mount
+dism /Unmount-Image /MountDir:D:\Mount /Commit
+~~~
+
+The target's existing `sppsvc` and `sppuinotify` services are disabled. A dedicated
+`NTTimebombSLShim` svchost group and service are created; the service maintains
+the cached kernel policy after the target boots. It does not share the
+DcomLaunch group and does not change Office's `osppsvc`. The local runtime
+reports licensed/genuine status and answers policy queries from that SKU's
+cache. Unknown policies return an error. Unsupported activation, ticket, COM,
+and other private interfaces return an explicit unsupported result; this mode
+does not issue a Microsoft digital license or implement online activation.
+
+### SLShim backup and restore
+
+Before target files are published, originals are copied to
+`OFFLINE_ROOT\NTTimebombBackup\SLShim`. Keep that directory with the image.
+It contains verified original DLLs and hives, original file metadata, and the
+deployment manifest. Existing original backups are not overwritten. Repeating
+an intact installation reports that it is already installed. An interrupted
+prepared deployment can be restored with the same command shown below.
+
+~~~bat
+nttimebomb.cmd /slshim-restore D:\Mount
+~~~
+
+Restore puts back the original DLLs and removes the added runtime DLLs. It
+restores the saved SPP service start settings and ProductPolicy, and removes
+the shim service, cache, and svchost group. It edits the current offline hives
+instead of copying an old complete hive over them, preserving unrelated registry
+changes made since installation. The initial ProductPolicy snapshot itself is
+restored. Unknown changed licensing DLLs or a changed OS edition/build stop
+restore to avoid downgrading a serviced installation. Backups remain after a
+successful restore. Archive the restored `SLShim` backup directory before a
+fresh installation; the tool deliberately does not replace its original backup.
+
+`/slshim` accepts an offline directory only. It does not implicitly run from
+`/image`, `/media`, or `/spponly`, and it does not process WIM/ISO filenames or
+all WIM indexes. Mount the intended index, run it explicitly, and commit the
+mount yourself. The mode leaves CI, boot files, kernels, LicensingUI, SPP token
+trees, and CatRoot unchanged. Target boot/code-integrity policies must accept
+the replacement DLLs. File/API validation is recorded in `TESTING.md`; booting,
+OOBE, login, and expired-application behavior require testing in the target VM.
 
 ## NT6 tokens and optional Branding
 
@@ -41,7 +152,7 @@ nttimebomb.cmd /nt6 /file D:\Donor /target D:\Mount
 
 The same automatic detection applies to /media ... /nt6 D:\Donor in every install.wim index. Tokens and Branding are staged together, so a failure in either tree triggers rollback of both files and permissions.
 
-NT6 mode does not replace SPP binaries, CatRoot, the store database, or SysWOW64. It does not patch CI, boot managers, loaders, or kernels, and never renames LicensingUI, regardless of the target build. Supply tokens appropriate for your target. Files are staged and verified before publication. On failure the tool attempts to restore original files and directory permissions.
+Below Build 15058, NT6 mode does not replace SPP binaries, CatRoot, the store database, or SysWOW64. It does not patch CI, boot managers, loaders, or kernels, and does not rename LicensingUI. Supply tokens appropriate for your target. Files are staged and verified before publication. On failure the tool attempts to restore original files and directory permissions. For a detected Build 15058 or newer, the normal newer-image policy applies instead: rename LicensingUI, skip tokens/Branding replacement, and suggest explicit /cishim.
 
 ## Complete installation media to a new ISO
 
@@ -61,7 +172,7 @@ nttimebomb.cmd /media D:\Preview.iso /work D:\SPP-Work /out D:\Preview-spp.iso /
 nttimebomb.cmd /media D:\Preview.iso /work D:\Tokens-Work /out D:\Preview-tokens.iso /nt6 D:\Donor\spp /oscdimg C:\Tools\oscdimg.exe /7zip C:\Tools\7z.exe
 ~~~
 
-Both combinations service every install.wim index and rebuild the ISO. /spponly uses standard SPP replacement, including its SysWOW64 handling, CatRoot rules and exclusions. /nt6 copies System32 SPP tokens with SPPSVC access and automatically applies optional Branding with TrustedInstaller access. Both preserve boot.wim, root boot managers, CI, loaders, kernels and LicensingUI. These explicit media replacement modes bypass the Build 15058 popup policy. The original /media /spp combination still performs the full boot-patching workflow.
+Both combinations service every install.wim index and rebuild the ISO. Below Build 15058, /spponly uses standard SPP replacement, including its SysWOW64 handling, CatRoot rules and exclusions; /nt6 copies System32 SPP tokens with SPPSVC access and automatically applies optional Branding with TrustedInstaller access. Both preserve boot.wim, root boot managers, CI, loaders, and kernels. Build 15058 and newer indexes only have LicensingUI renamed and receive a /cishim suggestion; replacement is skipped in those indexes. The original /media /spp combination still performs the full older boot-patching workflow.
 
 The tool performs the following operations.
 
@@ -71,7 +182,7 @@ The tool performs the following operations.
 4. Patch root Legacy bootmgr and UEFI bootmgr.efi for supported older media.
 5. Build a dual BIOS/UEFI UDF ISO with OSCDIMG using the original El Torito boot images.
 
-For older images, the normal offline workflow also handles existing Windows boot managers, loaders, CI, hvloader, and WinRE. Main-system and WinRE kernels remain unchanged. Optional /spp D:\RTM-SPP replaces SPP in every install.wim index, but does not apply the donor to boot.wim. Use a donor appropriate for every installation edition and architecture being processed, or service selected images separately.
+For older images, the normal offline workflow also handles existing Windows boot managers, loaders, CI, hvloader, and WinRE. Main-system and WinRE kernels remain unchanged. Optional /spp D:\RTM-SPP replaces SPP in every install.wim index, but does not apply the donor to boot.wim. For multi-index install.wim, use the shared-binary and per-SKU donor layout below. /media ... /spponly uses the same SKU selection. /nt6 keeps its existing tokens/Branding donor layout.
 
 Standalone boot.wim and install.wim files are required. Convert SWM or ESD media to WIM before using this mode. Unsupported boot-file structures stop the operation. The final ISO is published only after OSCDIMG succeeds. The workspace remains for inspection and manual cleanup. Failure may leave a partial ISO with .partial- in its name.
 
@@ -93,7 +204,7 @@ nttimebomb.cmd /image W:\ /boot S:\ /recovery R:\
 nttimebomb.cmd /image D:\install.wim /index 4 /out D:\install-patched.wim
 ~~~
 
-WIM input requires a new /out path. /image defaults to index 1. Use /media for all installation indexes. Supported earlier files are identified using PE structure and code patterns. The existing matcher does not require a build number or PDB.
+WIM input requires a new /out path. /image and /spponly default to index 1. Use /index all to service every index, or /index N to select one. /media also services all installation indexes. Supported earlier files are identified using PE structure and code patterns. The existing matcher does not require a build number or PDB.
 
 ### Use /image with /spp for older preview expiration
 
@@ -131,7 +242,17 @@ For complete installation media and all install.wim editions, use /media with /s
 
 ### Build 15058 and newer
 
-For /image, standalone /spponly, /bootwim, and the full-patching /media workflow, Build 15058 or newer uses a separate policy. Only Windows\System32\LicensingUI.exe is renamed to LicensingUI.exe.bak, when present. Existing backups are preserved. Newer media-root boot managers are retained. This addresses the popup. The watermark remains, and MMC or Windows Defender can still be affected after expiration. NT6 and the two replacement-only media modes operate independently of this policy.
+For normal /image, /spponly, /spp, /spp-reference, /nt6, /bootwim, and /media image processing, Build 15058 or newer uses a separate policy. Only Windows\System32\LicensingUI.exe is renamed to LicensingUI.exe.bak, when present. Existing backups are preserved. SPP replacement and legacy boot patches are skipped, and the tool prompts you to run nttimebomb /cishim OFFLINE_ROOT explicitly on a mounted or deployed Windows image. Newer media-root boot managers are retained. The watermark remains. /cishim operates independently of the build boundary; restore and read-only commands retain their existing scope.
+
+For example, with a manually mounted newer preview:
+
+~~~bat
+nttimebomb.cmd /image D:\Mount
+nttimebomb.cmd /cishim D:\Mount
+dism /Unmount-Image /MountDir:D:\Mount /Commit
+~~~
+
+/cishim itself accepts a mounted directory or offline partition, not a WIM or ISO filename. When using a WIM or ISO workflow, mount or deploy the resulting Windows image and run /cishim before the final commit/repack.
 
 ## Standard SPP replacement
 
@@ -146,6 +267,60 @@ nttimebomb.cmd /spp D:\RTM-SPP /target D:\Mount
 SPP files receive TrustedInstaller ownership, with the existing sppsvc access rules for sppsvc.exe and spp\store\2.0. Existing CatRoot owners and ACLs are retained. Selected catalogs supplied beside sppsvc.exe go to System32\CatRoot\{F750E6C3-38EE-11D1-85E5-00C04FC295EE}. A donor CatRoot tree preserves relative paths. A supplied SKU catalog may retire the same SKU identity's old catalog whose version matches the target kernel.
 
 Standard migration skips sppnp.dll, sppinst.dll, sppcomapi.dll, sppcommdlg.dll, and csvlk-pack-Volume-CSVLK-{2,3,4}-ul-store-rtm.xrm-ms under spp\tokens\skus\csvlk-pack. NT6 mode copies its supplied tokens independently of these exclusions.
+
+### SPP-only replacement below Build 15058
+
+Use /spponly when you want only the standard SPP replacement described above on an image below Build 15058. /spp identifies your donor; the value after /spponly identifies the offline Windows root or input WIM. A donor is required below that boundary. The equivalent /image ROOT /spponly form is also accepted. On Build 15058 or newer, this mode follows the LicensingUI rename and /cishim suggestion policy instead of replacing SPP.
+
+~~~bat
+nttimebomb.cmd /spponly D:\Mount /spp D:\RTM-SPP
+nttimebomb.cmd /image D:\Mount /spponly /spp D:\RTM-SPP
+nttimebomb.cmd /spponly D:\install.wim /out D:\install-spp.wim /index all /spp D:\RTM-SPP
+nttimebomb.cmd /spponly D:\install.wim /out D:\edition-spp.wim /index 2 /spp D:\RTM-SPP
+~~~
+
+Below Build 15058, these commands replace the supplied native SPP files, optional SysWOW64 SPP files, the spp tree, and selected CatRoot files with the same exclusions, permissions, and catalog-retirement rules as standard SPP mode. They preserve boot files, CI, kernels, hvloader, WinRE, and LicensingUI.exe. When you supply an already mounted directory, commit it yourself afterward. When you supply a WIM, the tool stages a private copy and publishes /out only after all selected indexes succeed. The policy is evaluated separately for each index. Omit /index to select index 1.
+
+For an installation ISO, the syntax is different: /media identifies the source, and the folder immediately after /spponly is the donor.
+
+~~~bat
+nttimebomb.cmd /media D:\Preview.iso /work D:\SPP-Work /out D:\Preview-spp.iso /spponly D:\RTM-SPP /oscdimg C:\Tools\oscdimg.exe /7zip C:\Tools\7z.exe
+~~~
+
+### Standard SPP donor for a multi-index WIM
+
+When the input WIM contains more than one index, standard /spp and /spponly use shared binaries and separate SKU trees. This also applies when /index N selects just one index from that multi-index file. The same rule applies to multi-index install.wim processed by /media. Single-index WIMs and already mounted Windows roots keep the original donor layout, with spp and CatRoot at the native donor level. /spp-reference, restore, and /nt6 retain their existing layouts.
+
+For example:
+
+~~~text
+D:\RTM-SPP\
+  sppsvc.exe                 shared native spp* program files
+  sppc.dll
+  ...
+  SysWOW64\                  shared x86 spp* program files for an x64 target
+    sppc.dll
+    ...
+  Professional\              exact EditionID, case insensitive
+    spp\
+      tokens\...
+      ...
+    Professional-package.cat
+  Enterprise\
+    spp\...
+    Enterprise-package.cat
+~~~
+
+The tool reads EditionID from each mounted index's offline SOFTWARE hive, closes the hive, and prints the selected SKU folder. Use EditionID names such as Professional, Enterprise, Core, ServerStandard, or ServerDatacenter, rather than a localized display name or index number. You can inspect an index's Edition with DISM before preparing the donor:
+
+~~~bat
+dism /English /Get-WimInfo /WimFile:D:\install.wim /Index:1
+nttimebomb.cmd /spponly D:\install.wim /out D:\install-spp.wim /index all /spp D:\RTM-SPP
+~~~
+
+Keep native binaries at the common donor level (flat, System32, or Windows\System32 layouts are accepted), with common SysWOW64 binaries in the existing supported location. Keep each SKU directory directly under the directory passed to /spp. Place that SKU's spp folder and catalog files side by side, for example Enterprise\spp and Enterprise\package.cat. No CatRoot subfolder is required: these flat catalogs go to target Windows\System32\CatRoot\{F750E6C3-38EE-11D1-85E5-00C04FC295EE}. An optional SKU\CatRoot tree remains supported and preserves its relative paths; supply each catalog only once. Shared-level spp trees, SysWOW64\spp trees, and shared-level catalogs are ignored in this multi-index mode, so they cannot mix licensing data between SKUs. A missing or unreadable EditionID, missing SKU directory, empty usable SPP tree, or missing usable catalogs stops the operation. No other SKU is used as a fallback, and a failed WIM operation does not publish /out.
+
+Native/x86 architecture checks, the SPP exclusions listed above, permission handling, old matching SKU catalog retirement, and rollback still apply. Supply shared program files matching the target architecture; shared binaries do not make a mixed x86/x64 WIM compatible with one donor set.
 
 ## Reference migration and file restore
 
@@ -191,12 +366,27 @@ PowerShell users must quote identifiers such as '{default}'. Secure Boot must pe
 
 ## Build from source
 
-Use Zig 0.15.2 from the repository root. The core program has no PowerShell dependency. Only the applicable modes invoke DISM, 7-Zip, or OSCDIMG.
+Use Zig 0.15.2 and Python 3 from the repository root. Python is needed only to
+build the SLShim payloads, not to run the packaged tool. Fetch the pinned
+Microsoft libraries, build the payloads and generated fingerprints, then compile
+the two main executables. Rebuild both executables whenever payloads change.
+The core program has no PowerShell dependency. Only the applicable modes invoke
+DISM, 7-Zip, or OSCDIMG.
 
 ~~~bat
+python tools/fetch-offreg.py
+python tools/build-slshim.py C:\Tools\zig\zig.exe
 zig rc /fo as-invoker.res -- src/flightpatch.rc
 zig cc -target x86-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -o nttimebomb-x86.exe
 zig cc -target x86_64-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -o nttimebomb-x64.exe
+python tools/package.py D:\Output\nt-timebomb-patch-v5.2-winpe.zip
 ~~~
+
+Maintainers extending the interface profiles can run
+`python tools/inspect-slshim-abi.py D:\17746 D:\29698` on original extracted
+native and SysWOW64 DLL sets. That optional inspection requires `pefile` and
+`capstone`; it verifies the original exports and x86 stack cleanup widths and
+regenerates the committed ABI facts/stubs. Adding an export to a definition does
+not implement its behavior. Rebuild payloads and both executables afterward.
 
 Exit codes are 0 for success, 1 for operation failure, 2 for invalid arguments, and 3 for missing required privileges. Preserve any reported remaining mount or backup paths when reporting a failure.

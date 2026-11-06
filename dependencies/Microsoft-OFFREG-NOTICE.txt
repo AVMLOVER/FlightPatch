@@ -1,0 +1,12 @@
+Microsoft Offline Registry Library (Offreg.dll)
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+These unmodified Microsoft binaries are separate third-party components and are
+not licensed under the NT Timebomb Patch project's GPL license.
+
+Microsoft's documentation identifies Offreg.dll as a binary redistributable DLL
+provided with the Windows Driver Kit for Windows 10 and earlier:
+https://learn.microsoft.com/en-us/windows/win32/devnotes/offline-registry-library-portal
+
+Download identities and SHA-256 fingerprints are recorded in README.md in this
+directory. All embedded Microsoft version and copyright resources are retained.

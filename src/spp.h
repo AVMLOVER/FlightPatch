@@ -543,12 +543,32 @@ static BOOL spp_rename(HANDLE file, const wchar_t *destination)
 
 static BOOL spp_remove(const wchar_t *path)
 {
-    HANDLE file = spp_open(path, DELETE, OPEN_EXISTING);
+    HANDLE file = spp_open(path, DELETE | FILE_READ_ATTRIBUTES, OPEN_EXISTING);
     if (file == INVALID_HANDLE_VALUE)
         return spp_missing(GetLastError());
+    FILE_BASIC_INFO saved = {0};
+    BOOL changed = FALSE;
+    HANDLE attributes = INVALID_HANDLE_VALUE;
+    BOOL ok = GetFileInformationByHandleEx(file, FileBasicInfo, &saved, sizeof saved);
+    if (ok && (saved.FileAttributes & FILE_ATTRIBUTE_READONLY)) {
+        attributes = spp_open(path, FILE_WRITE_ATTRIBUTES, OPEN_EXISTING);
+        FILE_BASIC_INFO writable = {0};
+        writable.FileAttributes = saved.FileAttributes & ~FILE_ATTRIBUTE_READONLY;
+        if (!writable.FileAttributes) writable.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+        changed = attributes != INVALID_HANDLE_VALUE &&
+                  SetFileInformationByHandle(attributes, FileBasicInfo, &writable, sizeof writable);
+        ok = changed;
+    }
     FILE_DISPOSITION_INFO disposition = {.DeleteFile = TRUE};
-    BOOL ok = SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof disposition);
+    ok = ok && SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof disposition);
+    DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+    if (!ok && changed) {
+        FILE_BASIC_INFO original = {0}; original.FileAttributes = saved.FileAttributes;
+        SetFileInformationByHandle(attributes, FileBasicInfo, &original, sizeof original);
+    }
+    if (attributes != INVALID_HANDLE_VALUE) CloseHandle(attributes);
     CloseHandle(file);
+    if (!ok) SetLastError(error);
     return ok;
 }
 
@@ -737,6 +757,8 @@ static BOOL spp_apply(SppPlan *plan)
             fwprintf(stderr, L"Cannot retire old SPP catalog %ls (Win32 %lu).\n",
                      plan->files[i].retired_path, GetLastError());
     }
+    DWORD failure = ok ? ERROR_SUCCESS : GetLastError();
+    if (!ok && !failure) failure = ERROR_GEN_FAILURE;
     for (size_t i = staged; i > 0; --i) {
         SppFile *entry = &plan->files[i - 1];
         if (entry->retired) {
@@ -794,10 +816,45 @@ static BOOL spp_apply(SppPlan *plan)
         LocalFree(entry->original_acl);
         entry->original_acl = NULL;
     }
+    if (!ok) SetLastError(failure);
     return ok;
 }
 
-static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check_only, SppMode mode)
+/* Read the mounted image's SKU without loading it into the system registry. */
+static BOOL spp_edition_donor(const wchar_t *source, const wchar_t *target,
+                              wchar_t result[PATH_SIZE])
+{
+    wchar_t hive_path[PATH_SIZE], edition[PATH_SIZE] = {0}, tree[PATH_SIZE];
+    HKEY hive = NULL, key = NULL;
+    DWORD type = 0, length = sizeof edition;
+    BOOL ok = build_path(hive_path, target, L"Windows\\System32\\Config\\SOFTWARE") &&
+              spp_path_chain(hive_path, FALSE) && spp_path_type(hive_path, FALSE, FALSE) &&
+              RegLoadAppKeyW(hive_path, &hive, KEY_READ, REG_PROCESS_APPKEY, 0) == ERROR_SUCCESS &&
+              RegOpenKeyExW(hive, L"Microsoft\\Windows NT\\CurrentVersion", 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS &&
+              RegQueryValueExW(key, L"EditionID", NULL, &type, (BYTE *)edition, &length) == ERROR_SUCCESS;
+    if (key)
+        RegCloseKey(key);
+    if (hive)
+        RegCloseKey(hive);
+    if (!ok || type != REG_SZ || length < 2 * sizeof(wchar_t) || length > sizeof edition ||
+        length % sizeof(wchar_t) || edition[length / sizeof(wchar_t) - 1] ||
+        wcslen(edition) + 1 != length / sizeof(wchar_t) ||
+        wcsspn(edition, L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != wcslen(edition)) {
+        fwprintf(stderr, L"Cannot read a safe EditionID from the offline SOFTWARE hive in %ls. Multi-index SPP replacement requires an identifiable SKU.\n", target);
+        return FALSE;
+    }
+    if (!build_path(result, source, edition) || !spp_path_chain(result, TRUE) ||
+        !build_path(tree, result, L"spp") || !spp_path_chain(tree, TRUE)) {
+        fwprintf(stderr, L"Missing or invalid SKU donor for EditionID %ls. Supply %ls\\%ls\\spp with catalogs beside that spp folder.\n",
+                 edition, source, edition);
+        return FALSE;
+    }
+    wprintf(L"SPP SKU %ls: %ls. Common native/SysWOW64 binaries are shared; spp and CatRoot use this SKU only.\n", edition, result);
+    return TRUE;
+}
+
+static BOOL replace_spp_components(const wchar_t *source, const wchar_t *target,
+                                   BOOL check_only, SppMode mode, const wchar_t *sku_donor)
 {
     static const wchar_t *const layouts[] = {L"Windows\\System32", L"System32", L""};
     wchar_t donor[PATH_SIZE], system32[PATH_SIZE], probe[PATH_SIZE];
@@ -844,8 +901,8 @@ static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check
               (plan.count || mode == SPP_REFERENCE);
     if (!ok) {
         fwprintf(stderr, L"Cannot prepare spp* files in %ls.\n", donor);
-    } else if (!spp_collect_tree(&plan, donor, system32, TRUE, 0)) {
-        fwprintf(stderr, L"Cannot prepare the spp tree in %ls.\n", donor);
+    } else if (!spp_collect_tree(&plan, sku_donor ? sku_donor : donor, system32, TRUE, 0)) {
+        fwprintf(stderr, L"Cannot prepare the spp tree in %ls.\n", sku_donor ? sku_donor : donor);
         ok = FALSE;
     }
     size_t native_count = plan.count, wow_count = 0;
@@ -857,7 +914,7 @@ static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check
              spp_path_chain(wow_target, TRUE) && _wcsicmp(wow_donor, wow_target);
         if (ok)
             ok = spp_collect(&plan, wow_donor, wow_target, L"", FALSE, IMAGE_FILE_MACHINE_I386) &&
-                 spp_collect_tree(&plan, wow_donor, wow_target, FALSE, IMAGE_FILE_MACHINE_I386);
+                 (sku_donor || spp_collect_tree(&plan, wow_donor, wow_target, FALSE, IMAGE_FILE_MACHINE_I386));
         if (!ok)
             fwprintf(stderr, L"Cannot prepare SysWOW64 SPP files from %ls. Use a separate x86 donor folder and an offline target with Windows\\SysWOW64.\n", wow_donor);
         wow_count = plan.count - native_count;
@@ -866,11 +923,12 @@ static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check
     if (ok && mode == SPP_RTM) {
         size_t before = plan.count;
         wchar_t catroot[PATH_SIZE];
-        ok = build_path(catroot, system32, L"CatRoot") && spp_collect_catalogs(&plan, donor, catroot) &&
-             (!wow_donor[0] || spp_collect_catalogs(&plan, wow_donor, catroot)) && plan.count > before;
+        ok = build_path(catroot, system32, L"CatRoot") &&
+             spp_collect_catalogs(&plan, sku_donor ? sku_donor : donor, catroot) &&
+             (sku_donor || !wow_donor[0] || spp_collect_catalogs(&plan, wow_donor, catroot)) && plan.count > before;
         catalog_count = plan.count - before;
         if (!ok)
-            fwprintf(stderr, L"Cannot prepare CatRoot files from %ls. Supply each catalog once, beside the SPP files or under CatRoot.\n", source);
+            fwprintf(stderr, L"Cannot prepare CatRoot files from %ls. Supply each catalog once, beside the spp folder or under CatRoot.\n", sku_donor ? sku_donor : source);
     }
     if (ok && mode == SPP_RTM)
         ok = spp_plan_old_catalogs(&plan, probe);
@@ -894,6 +952,23 @@ static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check
     free(plan.files);
     free(plan.directories);
     return ok;
+}
+
+static BOOL replace_image_spp(const wchar_t *source, const wchar_t *target,
+                              BOOL check_only, SppMode mode, BOOL per_sku)
+{
+    wchar_t sku_donor[PATH_SIZE];
+    if (per_sku && mode == SPP_RTM) {
+        if (!spp_edition_donor(source, target, sku_donor))
+            return FALSE;
+        return replace_spp_components(source, target, check_only, mode, sku_donor);
+    }
+    return replace_spp_components(source, target, check_only, mode, NULL);
+}
+
+static BOOL replace_spp(const wchar_t *source, const wchar_t *target, BOOL check_only, SppMode mode)
+{
+    return replace_image_spp(source, target, check_only, mode, FALSE);
 }
 
 static BOOL restore_spp_file(const wchar_t *source, const wchar_t *target, const wchar_t *relative)

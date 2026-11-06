@@ -148,9 +148,7 @@ static BOOL service_media_install(const wchar_t *mount, void *context)
     MediaInstall *install = context;
     ImageOptions *options = install->options;
     if (install->mode == MEDIA_NT6)
-        return replace_nt6_tokens(options->source, mount);
-    if (install->mode == MEDIA_SPP_ONLY)
-        return replace_spp(options->source, mount, FALSE, SPP_RTM);
+        return service_nt6(options->source, mount);
     return service_image(mount, options);
 }
 
@@ -204,6 +202,8 @@ static BOOL service_media(const wchar_t *source, const wchar_t *work, const wcha
         if (i == 0 && mode != MEDIA_PATCH)
             continue;
         options->boot_wim = i == 0;
+        options->patch_boot = mode == MEDIA_PATCH;
+        options->sku_spp = i == 1 && count > 1;
         const wchar_t *donor = options->source;
         if (i == 0)
             options->source = NULL;

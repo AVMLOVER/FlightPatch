@@ -441,6 +441,15 @@ static unsigned image_build(const wchar_t *root, BOOL boot_wim)
     return 0;
 }
 
+#include "ci_expiry.h"
+#include "slshim_install.h"
+
+static void suggest_ci(void)
+{
+    wprintf(L"For CI build-expiry restrictions, use nttimebomb /cishim OFFLINE_ROOT on a mounted or deployed offline Windows image.\n"
+            L"/cishim has no build-number gate. The watermark remains.\n");
+}
+
 static BOOL rename_licensing_ui(const wchar_t *root, unsigned build)
 {
     wchar_t path[PATH_SIZE], backup[PATH_SIZE];
@@ -450,11 +459,11 @@ static BOOL rename_licensing_ui(const wchar_t *root, unsigned build)
         !spp_path_type(backup, FALSE, TRUE))
         return FALSE;
 
-    wprintf(L"Build %u: newer preview expiration uses a popup and watermark instead of the legacy FlightSigned restart or boot block.\n"
-            L"Expiry may still prevent MMC and Windows Defender from running. The watermark remains.\n", build);
+    wprintf(L"Build %u: the normal image/SPP workflow only renames LicensingUI.exe.\n", build);
     if (!spp_path_type(path, FALSE, FALSE)) {
         wprintf(spp_path_type(backup, FALSE, FALSE) ? L"LicensingUI.exe is already renamed.\n" :
                                                    L"LicensingUI.exe is absent. No files changed.\n");
+        suggest_ci();
         return TRUE;
     }
     if (spp_path_type(backup, FALSE, FALSE)) {
@@ -467,8 +476,10 @@ static BOOL rename_licensing_ui(const wchar_t *root, unsigned build)
         fwprintf(stderr, L"Cannot rename %ls (Win32 %lu).\n", path, GetLastError());
     if (file != INVALID_HANDLE_VALUE)
         CloseHandle(file);
-    if (ok)
+    if (ok) {
         wprintf(L"Renamed LicensingUI.exe to %ls.\n", backup);
+        suggest_ci();
+    }
     return ok;
 }
 
@@ -476,8 +487,14 @@ typedef struct {
     BCRYPT_ALG_HANDLE algorithm;
     const wchar_t *boot, *recovery, *source;
     SppMode spp_mode;
-    BOOL patch_boot, boot_wim;
+    BOOL patch_boot, boot_wim, sku_spp;
 } ImageOptions;
+
+static BOOL service_nt6(const wchar_t *source, const wchar_t *root)
+{
+    unsigned build = image_build(root, FALSE);
+    return build >= 15058 ? rename_licensing_ui(root, build) : replace_nt6_tokens(source, root);
+}
 
 static BOOL service_image(const wchar_t *root, void *context)
 {
@@ -493,12 +510,12 @@ static BOOL service_image(const wchar_t *root, void *context)
         fwprintf(stderr, L"For builds below 15058, /spponly requires /spp or /spp-reference.\n");
         return FALSE;
     }
-    if (options->source && !replace_spp(options->source, root, TRUE, options->spp_mode))
+    if (options->source && !replace_image_spp(options->source, root, TRUE, options->spp_mode, options->sku_spp))
         return FALSE;
     if (options->patch_boot &&
         !patch_offline_image(options->algorithm, root, options->boot, options->recovery, options->boot_wim))
         return FALSE;
-    if (options->source && !replace_spp(options->source, root, FALSE, options->spp_mode)) {
+    if (options->source && !replace_image_spp(options->source, root, FALSE, options->spp_mode, options->sku_spp)) {
         if (options->patch_boot)
             fwprintf(stderr, L"Offline boot updates completed before SPP failed. The SPP operation can be retried separately.\n");
         return FALSE;
@@ -510,9 +527,34 @@ static BOOL service_image(const wchar_t *root, void *context)
 
 static int help(void)
 {
-    wprintf(L"NT Timebomb Patch 5.1\n\n"
+    wprintf(L"NT Timebomb Patch 5.2 (experimental build)\n\n"
             L"Use an elevated command prompt for offline servicing. In WinPE use SYSTEM.\n"
             L"All paths must be local drive paths under MAX_PATH. Quote paths containing spaces.\n\n"
+            L"EXPERIMENTAL COMPLETE WINDOWS LICENSING SHIM\n"
+            L"  nttimebomb /slshim OFFLINE_WINDOWS_ROOT\n"
+            L"  nttimebomb /slshim-restore OFFLINE_WINDOWS_ROOT\n"
+            L"Explicitly replaces the target's licensing client DLLs, disables existing Windows\n"
+            L"SPP services and installs a dedicated LocalSystem shim service. It uses that SKU's\n"
+            L"own ProductPolicy, preserves DLL export names/ordinals and validates known ABIs.\n"
+            L"Use the complete slshim/ and dependencies/ folders from this package. Backups\n"
+            L"are retained in OFFLINE_ROOT\\NTTimebombBackup\\SLShim. Restore includes original\n"
+            L"DLLs and permissions, SPP service settings and ProductPolicy; unrelated registry\n"
+            L"changes are retained. This is a local licensing emulation, not a Microsoft digital\n"
+            L"license or online activation. Unsupported licensing APIs return explicit errors.\n"
+            L"This mode is never implied by /image, /spp, /nt6, /media or /cishim. It does not\n"
+            L"change CI, boot files, kernels or LicensingUI. Apply /cishim separately if needed.\n\n"
+            L"CI BUILD-EXPIRY PATCH\n"
+            L"  nttimebomb /cishim OFFLINE_WINDOWS_ROOT\n"
+            L"Example: nttimebomb /cishim D:\\mount\n"
+            L"Only Windows\\System32\\ci.dll is processed. No build/version query is used.\n"
+            L"Preview x64 expiry callbacks are identified structurally and return a zero expiry\n"
+            L"time with success. Existing earlier x86/x64 FlightSigned CI rules are also accepted.\n"
+            L"Unknown or ambiguous structures fail without writing. Native x86 newer preview\n"
+            L"expiry callbacks are not yet verified; x86 hosts can service the x64 samples.\n"
+            L"The original CI and its permissions are saved as ci.dll.nttp-original before writing.\n"
+            L"Existing backups are never overwritten. Retry recognizes an already patched CI.\n"
+            L"This command does not rename LicensingUI or change SPP, boot files, BCD or kernels.\n"
+            L"The target boot chain must accept the modified CI; signatures are not regenerated.\n\n"
             L"NT6 TOKENS AND OPTIONAL BRANDING\n"
             L"  nttimebomb /nt6 /file DONOR_FOLDER /target OFFLINE_WINDOWS_ROOT\n"
             L"Copies only System32\\spp\\tokens from the donor. A donor may be its image root,\n"
@@ -521,7 +563,8 @@ static int help(void)
             L"files and folders. If DONOR_FOLDER contains Branding (or Windows\\Branding), its\n"
             L"contents also update target Windows\\Branding with TrustedInstaller Full Control.\n"
             L"This detection is automatic, with no extra switch. Existing target-only files remain.\n"
-            L"This mode never patches CI or boot files and never renames LicensingUI.\n\n"
+            L"For builds below 15058 this mode changes only tokens and optional Branding.\n"
+            L"Build >=15058 follows the image policy below: rename LicensingUI, then suggest /cishim.\n\n"
             L"COMPLETE INSTALLATION MEDIA\n"
             L"  nttimebomb /media SOURCE_ISO_OR_FOLDER /work NEW_FOLDER /out NEW_ISO\n"
             L"    [/oscdimg OSCDIMG_EXE] [/7zip SEVENZIP_EXE] [/spp RTM_FOLDER]\n"
@@ -529,7 +572,8 @@ static int help(void)
             L"  nttimebomb /media SOURCE /work NEW_FOLDER /out NEW_ISO /nt6 TOKENS_DONOR\n"
             L"With /spponly or /nt6, only all install.wim indexes are serviced. /nt6 also applies\n"
             L"optional Branding using the same automatic donor detection. boot.wim and\n"
-            L"media-root boot files are preserved. These explicit modes do not rename LicensingUI.\n"
+            L"media-root boot files are preserved. The Build >=15058 policy also applies to these\n"
+            L"replacement modes: rename LicensingUI, skip replacement, and suggest /cishim.\n"
             L"Copies or extracts the source into a new workspace, services every boot.wim and\n"
             L"install.wim index, and patches the media-root bootmgr and bootmgr.efi.\n"
             L"Requires standalone sources\\boot.wim and sources\\install.wim plus BIOS/UEFI\n"
@@ -544,13 +588,44 @@ static int help(void)
             L"EXISTING OFFLINE MODES\n"
             L"  /image ROOT [/boot ESP] [/recovery ROOT] [/spp DONOR]\n"
             L"  /spponly ROOT /spp DONOR\n"
+            L"  /spponly INPUT_WIM /out NEW_WIM /spp DONOR [/index N|all]\n"
+            L"  /image ROOT /spponly /spp DONOR\n"
+            L"/spponly replaces SPP only below Build 15058, preserving boot files, CI, kernels,\n"
+            L"and LicensingUI. A donor is required for those builds. For multi-index WIMs, shared spp*\n"
+            L"binaries stay at the donor root (and SysWOW64); each EditionID folder contains spp\\\n"
+            L"and the SKU's *.cat files side by side. A CatRoot subfolder is optional.\n"
+            L"Missing SKU folders or usable catalogs stop the operation.\n"
             L"  /bootwim EXTRACTED_ROOT\n"
             L"  /bootwim INPUT_WIM /out NEW_WIM [/index N]\n"
-            L"Use /out with WIM input. /image defaults to index 1; /bootwim defaults to all indexes.\n"
-            L"For Build >=15058, these image modes only rename LicensingUI.exe to .exe.bak.\n"
-            L"NT6 tokens-only is independent of that build policy. Read README.md for donor\n"
+            L"Use /out with WIM input. /image and /spponly default to index 1; /index all selects\n"
+            L"every index. /bootwim defaults to all indexes. Single-index WIMs and mounted roots\n"
+            L"keep the original flat donor layout. SKU selection applies to standard /spp only.\n"
+            L"For Build >=15058, normal image/SPP/NT6 workflows only rename LicensingUI.exe\n"
+            L"and suggest the explicit /cishim command. Restore and read-only commands retain their scope.\n"
+            L"Read README.md for donor\n"
             L"layouts, SPP exclusions, restore examples, boot diagnostics, and known limitations.\n");
     return 0;
+}
+
+static int run_ci(int argc, wchar_t **argv)
+{
+    wchar_t root[PATH_SIZE];
+    if (argc != 3 || !normalize(root, argv[2]) || !offline_root(root, FALSE)) {
+        fwprintf(stderr, L"Usage: nttimebomb /cishim OFFLINE_WINDOWS_ROOT\nExample: nttimebomb /cishim D:\\mount\n");
+        return 2;
+    }
+    if ((in_winpe() && !is_system()) || !enable_privilege(L"SeBackupPrivilege") || !enable_privilege(L"SeRestorePrivilege")) {
+        privilege_hint();
+        return 3;
+    }
+    BCRYPT_ALG_HANDLE algorithm;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+        return 1;
+    BOOL ok = patch_ci_only(algorithm, root);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (!ok)
+        privilege_hint();
+    return ok ? 0 : 1;
 }
 
 static int run_new(int argc, wchar_t **argv)
@@ -625,7 +700,7 @@ static int run_new(int argc, wchar_t **argv)
         return 3;
     }
     if (nt6_target)
-        return replace_nt6_tokens(source, target) ? 0 : 1;
+        return service_nt6(source, target) ? 0 : 1;
     BCRYPT_ALG_HANDLE algorithm;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
         return 1;
@@ -640,11 +715,12 @@ static int run_new(int argc, wchar_t **argv)
 static int offline_usage(void)
 {
     fwprintf(stderr, L"Usage: nttimebomb /image OFFLINE_ROOT [/boot BOOT_ROOT] [/recovery RECOVERY_ROOT] [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
+                     L"       nttimebomb /cishim OFFLINE_ROOT\n"
                      L"       nttimebomb {/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT} /target OFFLINE_ROOT\n"
                      L"       nttimebomb /spp-restore CLEAN_IMAGE_ROOT /target OFFLINE_ROOT\n"
                      L"       nttimebomb /spp-restore ORIGINAL_FILE /target OFFLINE_ROOT /file WINDOWS_RELATIVE_PATH\n"
                      L"       nttimebomb /spponly OFFLINE_ROOT [/spp RTM_FOLDER | /spp-reference REFERENCE_ROOT]\n"
-                     L"       nttimebomb {/image | /spponly} INPUT_WIM /out OUTPUT_WIM [/index N] [SPP options]\n"
+                     L"       nttimebomb {/image | /spponly} INPUT_WIM /out OUTPUT_WIM [/index N|all] [SPP options]\n"
                      L"       nttimebomb /bootwim EXTRACTED_ROOT\n"
                      L"       nttimebomb /bootwim INPUT_WIM /out OUTPUT_WIM [/index N]\n");
     return 2;
@@ -719,9 +795,9 @@ static int run_offline(int argc, wchar_t **argv)
         return 2;
     }
     BOOL raw_wim = (image || boot_wim) && spp_ext(target, (const wchar_t *const[]){L".wim", NULL});
-    DWORD first = 1, last = 1;
+    DWORD first = 1, last = 1, count = 0;
     if (raw_wim) {
-        DWORD count = wim_image_count(target);
+        count = wim_image_count(target);
         if (!output_arg || boot_arg || recovery_arg)
             return offline_usage();
         if (!count) {
@@ -729,7 +805,9 @@ static int run_offline(int argc, wchar_t **argv)
             return 1;
         }
         last = boot_wim ? count : 1;
-        if (index_arg) {
+        if (index_arg && !_wcsicmp(index_arg, L"all")) {
+            last = count;
+        } else if (index_arg) {
             wchar_t *end;
             first = wcstoul(index_arg, &end, 10);
             if (*end || wcsspn(index_arg, L"0123456789") != wcslen(index_arg) ||
@@ -764,7 +842,8 @@ static int run_offline(int argc, wchar_t **argv)
     }
     ImageOptions options = {
         .algorithm = algorithm, .boot = boot_arg ? boot : NULL, .recovery = recovery_arg ? recovery : NULL,
-        .source = source_arg ? source : NULL, .spp_mode = spp_mode, .patch_boot = patch_boot, .boot_wim = boot_wim
+        .source = source_arg ? source : NULL, .spp_mode = spp_mode, .patch_boot = patch_boot, .boot_wim = boot_wim,
+        .sku_spp = raw_wim && count > 1
     };
     BOOL ok = raw_wim ? edit_wim(target, output, first, last, service_image, &options) :
                         service_image(target, &options);
@@ -846,6 +925,10 @@ static int check_boot(int argc, wchar_t **argv)
 
 int wmain(int argc, wchar_t **argv)
 {
+    if(argc>=2 && (!_wcsicmp(argv[1],L"/slshim") || !_wcsicmp(argv[1],L"/slshim-restore")))
+        return run_slshim(argc,argv);
+    if (argc >= 2 && !_wcsicmp(argv[1], L"/cishim"))
+        return run_ci(argc, argv);
     if (argc == 1 || (argc == 2 && (!_wcsicmp(argv[1], L"/?") || !_wcsicmp(argv[1], L"/help") ||
                                    !_wcsicmp(argv[1], L"--help"))))
         return help();
