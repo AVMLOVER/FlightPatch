@@ -6,6 +6,7 @@ typedef struct {
     DWORD section_table;
     WORD sections;
     BOOL x64;
+    WORD machine;
 } Image;
 
 enum { NONE = UINT32_MAX, MAX_EDITS = 32 };
@@ -37,7 +38,7 @@ static uint16_t u16(const void *data)
     return value;
 }
 
-static BOOL image_open(Image *im, BYTE *bytes, DWORD size)
+static BOOL image_open_arch(Image *im, BYTE *bytes, DWORD size, BOOL arm64)
 {
     if (size < 0x100 || memcmp(bytes, "MZ", 2))
         return FALSE;
@@ -46,7 +47,7 @@ static BOOL image_open(Image *im, BYTE *bytes, DWORD size)
         return FALSE;
     WORD machine = u16(bytes + pe + 4), sections = u16(bytes + pe + 6);
     WORD opt = u16(bytes + pe + 20), magic = u16(bytes + pe + 24);
-    BOOL x64 = machine == IMAGE_FILE_MACHINE_AMD64 && magic == 0x20b;
+    BOOL x64 = (machine == IMAGE_FILE_MACHINE_AMD64 || (arm64 && machine == IMAGE_FILE_MACHINE_ARM64)) && magic == 0x20b;
     if ((!x64 && !(machine == IMAGE_FILE_MACHINE_I386 && magic == 0x10b)) ||
         opt < (x64 ? 0x70 : 0x60) || !sections || sections > 96)
         return FALSE;
@@ -59,8 +60,13 @@ static BOOL image_open(Image *im, BYTE *bytes, DWORD size)
         if (start > size || length > size - start || u32(s + 12) > UINT32_MAX - length)
             return FALSE;
     }
-    *im = (Image){bytes, size, pe, table, sections, x64};
+    *im = (Image){bytes, size, pe, table, sections, x64, machine};
     return TRUE;
+}
+
+static BOOL image_open(Image *im, BYTE *bytes, DWORD size)
+{
+    return image_open_arch(im, bytes, size, FALSE);
 }
 
 static DWORD translate(const Image *im, DWORD address, BOOL to_rva, BOOL executable)

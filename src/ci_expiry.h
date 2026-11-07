@@ -92,8 +92,71 @@ static DWORD ci_leaf_space(const Image *im)
     return NONE;
 }
 
+static int32_t arm_signed(DWORD value, unsigned bits)
+{
+    DWORD sign = 1u << (bits-1);
+    return (int32_t)((value ^ sign) - sign);
+}
+
+static DWORD arm_bl(const Image *im, DWORD offset)
+{
+    DWORD word = u32(im->bytes + offset);
+    DWORD rva = translate(im, offset, TRUE, TRUE);
+    if ((word & 0xfc000000) != 0x94000000 || rva == NONE) return NONE;
+    return translate(im, rva + arm_signed(word & 0x3ffffff, 26) * 4, FALSE, TRUE);
+}
+
+static BOOL arm_ci_zero(const Image *im, Plan *plan)
+{
+    DWORD entry = ci_initialize_export(im);
+    if (entry == NONE || !code_span(im, entry, 128)) return FALSE;
+    DWORD dir = im->pe + 24 + 0x70 + 24;
+    if (dir + 8 > im->section_table) return FALSE;
+    DWORD table = translate(im, u32(im->bytes+dir), FALSE, FALSE);
+    DWORD size = u32(im->bytes+dir+4);
+    if (table == NONE || size > im->size-table || size % 8) return FALSE;
+
+    unsigned found = 0;
+    for (DWORD off = entry; off < entry+128; off += 4) {
+        if (u32(im->bytes+off) == 0xd65f03c0) break;
+        DWORD start = arm_bl(im, off);
+        if (start == NONE) continue;
+        DWORD rva = translate(im, start, TRUE, TRUE);
+        for (DWORD p = table; p < table+size; p += 8) {
+            if (u32(im->bytes+p) != rva) continue;
+            DWORD unwind = u32(im->bytes+p+4), words;
+            if (unwind & 3) words = (unwind >> 2) & 0x7ff;
+            else {
+                DWORD xdata = translate(im, unwind, FALSE, FALSE);
+                if (xdata == NONE || xdata > im->size-4) break;
+                words = u32(im->bytes+xdata) & 0x3ffff;
+            }
+            if (!code_span(im, start, words*4)) break;
+            for (DWORD o = start; o+12 <= start+words*4; o += 4) {
+                DWORD adrp = u32(im->bytes+o), add = u32(im->bytes+o+4), store = u32(im->bytes+o+8);
+                if ((adrp & 0x9f000000) != 0x90000000 || (add & 0xffc00000) != 0x91000000 ||
+                    ((add >> 5) & 31) != (adrp & 31) || (store & 0xffc00000) != 0xa9000000 ||
+                    ((store >> 10) & 31) != (add & 31) || ((store >> 15) & 127) != 0xa8/8) continue;
+                DWORD imm = ((adrp >> 5) & 0x7ffff)*4 + ((adrp >> 29) & 3);
+                DWORD target = (DWORD)((translate(im, o, TRUE, TRUE) & ~4095u) +
+                    (int64_t)arm_signed(imm,21)*4096 + ((add>>10)&4095));
+                DWORD leaf = translate(im, target, FALSE, TRUE);
+                if (leaf != NONE && code_span(im, leaf, 12) &&
+                    u32(im->bytes+leaf)==0xf900001f && u32(im->bytes+leaf+4)==0x52800000 &&
+                    u32(im->bytes+leaf+8)==0xd65f03c0) ++found;
+            }
+            break;
+        }
+    }
+    if (found != 1) return FALSE;
+    ++plan->existing;
+    return TRUE;
+}
+
 static BOOL plan_ci_expiry(const Image *im, Plan *plan)
 {
+    if (im->machine == IMAGE_FILE_MACHINE_ARM64)
+        return arm_ci_zero(im, plan);
     static const wchar_t path[] = L"\\SystemRoot\\System32\\ci.dll";
     static const char leaf[] = "\x48\x83\x21\x00\x33\xc0\xc3";
     DWORD literal = unique_data(im, path, sizeof path);
@@ -162,6 +225,97 @@ static BOOL plan_ci_expiry(const Image *im, Plan *plan)
            record(im, plan, function, jump, sizeof jump, L"CI build-expiry callback");
 }
 
+static BOOL plan_ci_boot(const Image *im, Plan *plan)
+{
+    if (!im->x64 || u16(im->bytes + im->pe + 24 + 0x44) != IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION)
+        return FALSE;
+
+    /* OslPrepareTarget removes two options from the same application entry.
+       Keep DisableIntegrityChecks (0x16000048) if explicitly set in BCD.
+       Leave the removal of DisableElamDrivers and the load-options sanitizer intact. */
+    const BYTE *bytes = im->bytes;
+    DWORD found = NONE;
+    if (im->machine == IMAGE_FILE_MACHINE_ARM64) {
+        const DWORD expected[] = {0x16000048, 0x260000e1, 0x12000030};
+        const unsigned literal[] = {4, 20, 44};
+        for (DWORD o = 0; o+52 <= im->size; o += 4) {
+            if (u32(bytes+o+8) != 0xf9400c00 || u32(bytes+o+24) != 0xf9400c00 ||
+                u32(bytes+o+40) != 0xf9400c00 || (u32(bytes+o+36) & 0xffc003ff) != 0x910003e2 ||
+                !code_span(im,o,52)) continue;
+            DWORD getter = arm_bl(im,o), remove = arm_bl(im,o+28), read = arm_bl(im,o+48);
+            if (getter == NONE || remove == NONE || read == NONE || getter == remove || getter == read || remove == read ||
+                arm_bl(im,o+16)!=getter || arm_bl(im,o+32)!=getter ||
+                (arm_bl(im,o+12)!=remove && u32(bytes+o+12)!=0xd503201f)) continue;
+            BOOL valid = TRUE;
+            for (unsigned i=0;i<ARRAYSIZE(expected);++i) {
+                DWORD op = u32(bytes+o+literal[i]);
+                DWORD rva = translate(im,o+literal[i],TRUE,TRUE);
+                DWORD data = translate(im,rva+arm_signed((op>>5)&0x7ffff,19)*4,FALSE,FALSE);
+                if ((op & 0xff00001f)!=0x18000001 || data==NONE || data>im->size-4 || u32(bytes+data)!=expected[i]) {
+                    valid = FALSE;
+                    break;
+                }
+            }
+            if (valid) {
+                if (found != NONE) return FALSE;
+                found = o+12;
+            }
+        }
+        return found != NONE && record(im, plan, found, "\x1f\x20\x03\xd5", 4,
+                                      L"keep the ARM64 loader's BCD nointegritychecks option");
+    }
+    for (DWORD offset = 0; offset + 61 <= im->size; ++offset) {
+        /* Later loaders obtain the application entry from the same getter before each option. */
+        if (at(im, offset, "\xe8\0\0\0\0\xba\x48\x00\x00\x16\x48\x8b\x48\x18", "x????xxxxxxxxx") &&
+            at(im, offset + 19, "\xe8\0\0\0\0\xba\xe1\x00\x00\x26\x48\x8b\x48\x18\xe8", "x????xxxxxxxxxx") &&
+            at(im, offset + 38, "\xe8\0\0\0\0\xbf\x30\x00\x00\x12\x4c\x8d\x45\0\x8b\xd7\x48\x8b\x48\x18\xe8",
+                "x????xxxxxxxx?xxxxxxx") && code_span(im, offset, 63)) {
+            DWORD getter = rel_target(im, offset + 5, (int32_t)u32(bytes + offset + 1));
+            DWORD remove = rel_target(im, offset + 38, (int32_t)u32(bytes + offset + 34));
+            DWORD read = rel_target(im, offset + 63, (int32_t)u32(bytes + offset + 59));
+            if (getter != NONE && remove != NONE && read != NONE && getter != remove && getter != read && remove != read &&
+                getter == rel_target(im, offset + 24, (int32_t)u32(bytes + offset + 20)) &&
+                getter == rel_target(im, offset + 43, (int32_t)u32(bytes + offset + 39)) &&
+                (all_nops(bytes + offset + 14, 5) ||
+                 (bytes[offset + 14] == 0xe8 && remove == rel_target(im, offset + 19, (int32_t)u32(bytes + offset + 15))))) {
+                if (found != NONE) return FALSE;
+                found = offset + 14;
+            }
+        }
+        if (!at(im, offset, "\x48\x8b\x0d\0\0\0\0\xba\x48\x00\x00\x16\x48\x89\x5d", "xxx????xxxxxxxx") ||
+            !at(im, offset + 21, "\x48\x8b\x0d\0\0\0\0\xba\xe1\x00\x00\x26\xe8", "xxx????xxxxxx") ||
+            !at(im, offset + 38, "\x48\x8b\x0d\0\0\0\0\x4c\x8d\x45\0\xbe\x30\x00\x00\x12\x8b\xd6\xe8", "xxx????xxx?xxxxxxxx") ||
+            bytes[offset + 15] != bytes[offset + 48] || !code_span(im, offset, 61))
+            continue;
+
+        /* The RIP-relative references at the three loads must resolve to the same slot. */
+        int64_t slot = 7 + (int64_t)(int32_t)u32(bytes + offset + 3);
+        if (slot != 28 + (int64_t)(int32_t)u32(bytes + offset + 24) ||
+            slot != 45 + (int64_t)(int32_t)u32(bytes + offset + 41))
+            continue;
+
+        DWORD remove_option = rel_target(im, offset + 38, (int32_t)u32(bytes + offset + 34));
+        DWORD read_option = rel_target(im, offset + 61, (int32_t)u32(bytes + offset + 57));
+        if (remove_option == NONE || read_option == NONE || read_option == remove_option ||
+            (!all_nops(bytes + offset + 16, 5) &&
+             (bytes[offset + 16] != 0xe8 || rel_target(im, offset + 21, (int32_t)u32(bytes + offset + 17)) != remove_option)))
+            continue;
+        if (found != NONE)
+            return FALSE;
+        found = offset + 16;
+    }
+    return found != NONE && record(im, plan, found, "\x90\x90\x90\x90\x90", 5,
+                                   L"keep the loader's BCD nointegritychecks option");
+}
+
+static BOOL ci_io_error(const wchar_t *action, const wchar_t *path, DWORD error)
+{
+    fwprintf(stderr, L"Cannot %ls %ls (Win32 %lu).\n", action, path, error);
+    if (error == ERROR_ACCESS_DENIED || error == ERROR_PRIVILEGE_NOT_HELD)
+        privilege_hint();
+    return FALSE;
+}
+
 static BOOL ci_original_backup(OfflineEdit *edit, BCRYPT_ALG_HANDLE algorithm)
 {
     wchar_t path[PATH_SIZE];
@@ -169,17 +323,18 @@ static BOOL ci_original_backup(OfflineEdit *edit, BCRYPT_ALG_HANDLE algorithm)
         return FALSE;
     HANDLE backup = spp_open(path, GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER, CREATE_NEW);
     if (backup == INVALID_HANDLE_VALUE) {
-        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS)
-            return FALSE;
+        DWORD error = GetLastError();
+        if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+            return ci_io_error(L"create backup", path, error);
         backup = spp_open(path, GENERIC_READ, OPEN_EXISTING);
+        if (backup == INVALID_HANDLE_VALUE)
+            return ci_io_error(L"open existing backup", path, GetLastError());
         Output original = {0};
-        BOOL ok = backup != INVALID_HANDLE_VALUE && offline_read(backup, &original, algorithm) &&
-                  !strcmp(original.sha, edit->before.sha);
+        BOOL ok = offline_read(backup, &original, algorithm) && !strcmp(original.sha, edit->before.sha);
         free(original.data);
-        if (backup != INVALID_HANDLE_VALUE)
-            CloseHandle(backup);
+        CloseHandle(backup);
         if (!ok)
-            fwprintf(stderr, L"Existing CI backup differs from the unpatched input: %ls. Preserve it separately before retrying.\n", path);
+            fwprintf(stderr, L"Existing backup differs from the unpatched input: %ls. Preserve it separately before retrying.\n", path);
         return ok;
     }
     LARGE_INTEGER start = {0};
@@ -189,75 +344,185 @@ static BOOL ci_original_backup(OfflineEdit *edit, BCRYPT_ALG_HANDLE algorithm)
     if (!ok)
         DeleteFileW(path);
     else
-        wprintf(L"Original CI and permissions retained at %ls.\n", path);
+        wprintf(L"Original file and permissions retained at %ls.\n", path);
     return ok;
 }
 
-static BOOL patch_ci_only(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root)
+static BOOL ci_check_live_file(const OfflineEdit *edit, const wchar_t *live, const wchar_t *name,
+                               const BY_HANDLE_FILE_INFORMATION *live_dir)
 {
-    wchar_t scope[OFFLINE_NT_PATH], live_final[OFFLINE_NT_PATH], live[PATH_SIZE], final[OFFLINE_NT_PATH];
-    OfflineEdit edit = {0};
-    UINT length = GetSystemWindowsDirectoryW(live, PATH_SIZE);
-    if (!length || length >= PATH_SIZE || !offline_root(root, FALSE) ||
-        !offline_directory(root, scope) || !offline_directory(live, live_final) ||
-        !build_path(edit.path, root, L"Windows\\System32\\ci.dll") || !spp_path_chain(edit.path, FALSE))
-        return FALSE;
-    edit.file = spp_open(edit.path, GENERIC_READ | READ_CONTROL, OPEN_EXISTING);
-    BOOL ok = edit.file != INVALID_HANDLE_VALUE && GetFileInformationByHandle(edit.file, &edit.id) &&
-              offline_path_name(edit.file, final) && offline_under(final, scope) &&
-              !offline_under(final, live_final) && offline_read(edit.file, &edit.before, algorithm);
-    /* Canonical paths alone do not distinguish a hardlink to the live CI. */
-    wchar_t live_ci[PATH_SIZE];
+    /* A single link outside the live tree, or a different volume, rules out an alias.
+       WinPE does not always have this boot file at the live System32 path. */
+    if (edit->id.nNumberOfLinks == 1 || edit->id.dwVolumeSerialNumber != live_dir->dwVolumeSerialNumber)
+        return TRUE;
+
+    wchar_t relative[48], path[PATH_SIZE];
     BOOL wow = FALSE;
     BOOL native_path = sizeof(void *) == 4 && IsWow64Process(GetCurrentProcess(), &wow) && wow;
-    if (ok && build_path(live_ci, live, native_path ? L"Sysnative\\ci.dll" : L"System32\\ci.dll")) {
-        HANDLE current = spp_open(live_ci, FILE_READ_ATTRIBUTES, OPEN_EXISTING);
-        BY_HANDLE_FILE_INFORMATION id;
-        ok = current != INVALID_HANDLE_VALUE && GetFileInformationByHandle(current, &id) &&
-             !offline_file_id(&edit.id, &id);
-        if (current != INVALID_HANDLE_VALUE)
-            CloseHandle(current);
-    } else {
-        ok = FALSE;
+    if (swprintf(relative, 48, L"%ls\\%ls", native_path ? L"Sysnative" : L"System32", name) < 0 ||
+        !build_path(path, live, relative))
+        return ci_io_error(L"resolve the live file to compare with", edit->path, ERROR_FILENAME_EXCED_RANGE);
+    HANDLE current = spp_open(path, FILE_READ_ATTRIBUTES, OPEN_EXISTING);
+    if (current == INVALID_HANDLE_VALUE)
+        return ci_io_error(L"check the live file for a hard link", path, GetLastError());
+    BY_HANDLE_FILE_INFORMATION id;
+    BOOL inspected = GetFileInformationByHandle(current, &id);
+    DWORD error = GetLastError();
+    CloseHandle(current);
+    if (!inspected)
+        return ci_io_error(L"read the identity of", path, error);
+    if (offline_file_id(&edit->id, &id)) {
+        fwprintf(stderr, L"Target is a hard link to the running Windows file %ls.\n", path);
+        return FALSE;
     }
-    if (ok) {
-        edit.after.size = edit.before.size;
-        edit.after.data = malloc(edit.after.size);
-        ok = edit.after.data != NULL;
+    return TRUE;
+}
+
+typedef struct {
+    const wchar_t *root;
+    wchar_t root_final[OFFLINE_NT_PATH], live_final[OFFLINE_NT_PATH], live[PATH_SIZE];
+    BY_HANDLE_FILE_INFORMATION live_dir;
+} CiScope;
+
+typedef enum { CI_ERROR, CI_READY, CI_ARM64_ZERO } CiProbe;
+
+static CiProbe ci_prepare(BCRYPT_ALG_HANDLE algorithm, const CiScope *scope,
+                          OfflineEdit *edit, BOOL loader)
+{
+    const wchar_t *name = loader ? L"winload.efi" : L"ci.dll";
+    wchar_t relative[48], final[OFFLINE_NT_PATH];
+    if (swprintf(relative, 48, L"Windows\\System32\\%ls", name) < 0 ||
+        !build_path(edit->path, scope->root, relative) || !spp_path_chain(edit->path, FALSE)) {
+        fwprintf(stderr, L"Cannot resolve a safe offline %ls path under %ls.\n", name, scope->root);
+        return CI_ERROR;
     }
+    edit->file = spp_open(edit->path, GENERIC_READ | READ_CONTROL, OPEN_EXISTING);
+    if (edit->file == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        ci_io_error(L"open offline target", edit->path, error);
+        return CI_ERROR;
+    }
+    if (!GetFileInformationByHandle(edit->file, &edit->id) || !offline_path_name(edit->file, final)) {
+        ci_io_error(L"resolve the identity of", edit->path, GetLastError());
+        return CI_ERROR;
+    }
+    if (!offline_under(final, scope->root_final) || offline_under(final, scope->live_final)) {
+        fwprintf(stderr, L"Target resolves outside the offline Windows root or inside running Windows: %ls.\n", edit->path);
+        return CI_ERROR;
+    }
+    if (!ci_check_live_file(edit, scope->live, name, &scope->live_dir))
+        return CI_ERROR;
+    if (!offline_read(edit->file, &edit->before, algorithm)) {
+        fwprintf(stderr, L"Cannot read or verify offline target %ls.\n", edit->path);
+        return CI_ERROR;
+    }
+
+    Image image;
     Plan plan = {0};
-    if (ok) {
-        memcpy(edit.after.data, edit.before.data, edit.after.size);
-        Image image;
-        ok = image_open(&image, edit.after.data, edit.after.size) && plan_ci_expiry(&image, &plan) &&
-             (plan.count || plan.existing);
-        if (!ok)
-            fwprintf(stderr, L"Unsupported or ambiguous CI expiry structure in %ls. No files changed.\n", edit.path);
+    if (!image_open_arch(&image, edit->before.data, edit->before.size, TRUE) ||
+        !(loader ? plan_ci_boot(&image, &plan) : plan_ci_expiry(&image, &plan)) ||
+        !(plan.count || plan.existing)) {
+        fwprintf(stderr, L"Unsupported or ambiguous %ls structure in %ls. No files changed.\n",
+                 loader ? L"UEFI loader" : L"CI expiry", edit->path);
+        return CI_ERROR;
     }
-    for (unsigned i = 0; ok && i < plan.count; ++i) {
+    if (!loader && image.machine == IMAGE_FILE_MACHINE_ARM64)
+        return CI_ARM64_ZERO;
+    if (!plan.count)
+        return CI_READY;
+
+    edit->after.size = edit->before.size;
+    edit->after.data = malloc(edit->after.size);
+    if (!edit->after.data) {
+        fwprintf(stderr, L"Cannot allocate a patch buffer for %ls.\n", edit->path);
+        return CI_ERROR;
+    }
+    memcpy(edit->after.data, edit->before.data, edit->after.size);
+    for (unsigned i = 0; i < plan.count; ++i) {
         Change *change = &plan.edits[i];
-        memcpy(edit.after.data + change->at, change->bytes, change->length);
+        memcpy(edit->after.data + change->at, change->bytes, change->length);
         wprintf(L"  %06lX  %ls\n", change->at, change->label);
     }
-    if (ok && plan.count) {
-        ok = fix_checksum(edit.after.data, edit.after.size) &&
-             digest(algorithm, edit.after.data, edit.after.size, edit.after.sha) &&
-             ci_original_backup(&edit, algorithm) && offline_lock(&edit, algorithm);
-        if (ok) {
-            edit.touched = TRUE;
-            ok = offline_write(&edit, &edit.after, algorithm);
+    if (!fix_checksum(edit->after.data, edit->after.size) ||
+        !digest(algorithm, edit->after.data, edit->after.size, edit->after.sha)) {
+        fwprintf(stderr, L"Cannot verify the prepared patch for %ls.\n", edit->path);
+        return CI_ERROR;
+    }
+    edit->after.changed = TRUE;
+    return CI_READY;
+}
+
+static BOOL patch_ci_file(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root, BOOL loader_only)
+{
+    CiScope scope = {.root = root};
+    UINT length = GetSystemWindowsDirectoryW(scope.live, PATH_SIZE);
+    if (!length || length >= PATH_SIZE || !offline_root(root, FALSE) ||
+        !offline_directory(root, scope.root_final) ||
+        !offline_directory_info(scope.live, scope.live_final, &scope.live_dir)) {
+        fwprintf(stderr, L"Cannot resolve a safe offline Windows root at %ls.\n", root);
+        return FALSE;
+    }
+
+    /* The loader is written first. Prepare and lock both files before writing either. */
+    enum { CI_LOADER, CI_BINARY, CI_FILES };
+    OfflineEdit edits[CI_FILES] = {
+        [CI_LOADER] = {.file = INVALID_HANDLE_VALUE},
+        [CI_BINARY] = {.file = INVALID_HANDLE_VALUE},
+    };
+    CiProbe ci = loader_only ? CI_READY : ci_prepare(algorithm, &scope, &edits[CI_BINARY], FALSE);
+    if (ci == CI_ARM64_ZERO) {
+        CloseHandle(edits[CI_BINARY].file);
+        free(edits[CI_BINARY].before.data);
+        wprintf(L"ARM64 CI expiry already returns zero. No files changed.\n");
+        return TRUE;
+    }
+    CiProbe loader = ci == CI_READY ? ci_prepare(algorithm, &scope, &edits[CI_LOADER], TRUE) : CI_ERROR;
+    BOOL ok = ci == CI_READY && loader == CI_READY;
+    if (ok && !loader_only) {
+        const BYTE *left = edits[CI_BINARY].before.data, *right = edits[CI_LOADER].before.data;
+        ok = u16(left+u32(left+0x3c)+4) == u16(right+u32(right+0x3c)+4);
+        if (!ok) fwprintf(stderr,L"CI and the UEFI loader have different architectures. No files changed.\n");
+    }
+
+    for (unsigned i = 0; ok && i < CI_FILES; ++i) {
+        OfflineEdit *edit = &edits[i];
+        if (edit->after.changed && (!ci_original_backup(edit, algorithm) || !offline_lock(edit, algorithm))) {
+            fwprintf(stderr, L"Patch preparation failed for %ls. The target contents were not written.\n", edit->path);
+            ok = FALSE;
         }
     }
-    if (!ok && edit.touched && !offline_write(&edit, &edit.before, algorithm))
-        fwprintf(stderr, L"CI rollback failed. Restore the retained .nttp-original backup for %ls.\n", edit.path);
-    if (edit.restore_readonly && !(edit.writable ? offline_readonly(edit.file, TRUE) : offline_reopen_readonly(edit.file, TRUE)))
-        ok = FALSE;
-    if (edit.file != INVALID_HANDLE_VALUE)
-        CloseHandle(edit.file);
-    free(edit.after.data);
-    free(edit.before.data);
-    if (ok)
-        wprintf(plan.count ? L"CI-only patch verified in %ls. No build-number check was used.\n" :
-                            L"CI-only patch is already present in %ls. No files changed.\n", root);
-    return ok;
+    for (unsigned i = 0; ok && i < CI_FILES; ++i) {
+        OfflineEdit *edit = &edits[i];
+        if (!edit->after.changed)
+            continue;
+        edit->touched = TRUE;
+        ok = offline_write(edit, &edit->after, algorithm);
+        if (!ok)
+            ci_io_error(L"write and verify", edit->path, GetLastError());
+    }
+
+    BOOL metadata_ok = TRUE;
+    for (unsigned i = CI_FILES; i > 0; --i) {
+        OfflineEdit *edit = &edits[i - 1];
+        if (!ok && edit->touched && !offline_write(edit, &edit->before, algorithm))
+            fwprintf(stderr, L"Rollback failed. Restore the retained .nttp-original backup for %ls.\n", edit->path);
+        if (edit->restore_readonly && !(edit->writable ? offline_readonly(edit->file, TRUE) : offline_reopen_readonly(edit->file, TRUE)))
+            metadata_ok = ci_io_error(L"restore the read-only attribute of", edit->path, GetLastError());
+        if (edit->file != INVALID_HANDLE_VALUE)
+            CloseHandle(edit->file);
+        free(edit->after.data);
+        free(edit->before.data);
+    }
+    if (!ok || !metadata_ok)
+        return FALSE;
+
+    if (!loader_only)
+        wprintf(edits[CI_BINARY].after.changed ? L"CI patch verified in %ls.\n" : L"CI patch already present in %ls.\n", root);
+    if (loader == CI_READY) {
+        wprintf(edits[CI_LOADER].after.changed ? L"UEFI loader patch verified in %ls.\n" :
+                                                L"UEFI loader patch already present in %ls.\n", root);
+        wprintf(L"Before rebooting, set nointegritychecks on for the target Windows BCD entry, with Secure Boot off.\n"
+                L"Example: bcdedit /store S:\\EFI\\Microsoft\\Boot\\BCD /set {default} nointegritychecks on\n");
+    }
+    return TRUE;
 }

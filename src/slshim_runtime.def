@@ -70,7 +70,7 @@ ServiceMain
     SLReArmWindows=sl_unsupported0
     SLRegisterEvent=sl_success4
     SLRegisterPlugin=sl_unsupported3
-    SLRegisterWindowsEvent=sl_unsupported2
+    SLRegisterWindowsEvent
     SLSetAuthenticationData=sl_unsupported3
     SLSetCurrentProductKey=sl_success3
     SLSetGenuineInformation=sl_success5
@@ -82,7 +82,7 @@ ServiceMain
     SLUnloadApplicationPolicies
     SLUnregisterEvent=sl_success4
     SLUnregisterPlugin=sl_unsupported2
-    SLUnregisterWindowsEvent=sl_unsupported2
+    SLUnregisterWindowsEvent
     SLpAuthenticateGenuineTicketResponse=sl_unsupported8
     SLpBeginGenuineTicketTransaction=sl_unsupported4
     SLpCheckProductKey=sl_unsupported2
@@ -97,7 +97,7 @@ ServiceMain
     SLpGetMachineUGUID=sl_unsupported2
     SLpGetTokenActivationGrantInfo=sl_unsupported6
     SLpIAActivateProduct=sl_unsupported2
-    SLpIsCurrentInstalledProductKeyDefaultKey=sl_unsupported2
+    SLpIsCurrentInstalledProductKeyDefaultKey
     SLpProcessOemProductKey=sl_unsupported2
     SLpProcessVMPipeMessage=sl_unsupported5
     SLpSetActivationInProgress=sl_unsupported2

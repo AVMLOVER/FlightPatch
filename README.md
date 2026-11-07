@@ -1,12 +1,15 @@
-# NT Timebomb Patch 5.2
+# NT Timebomb Patch 5.2.1
 
-Version 5.2 adds explicit /cishim servicing with no build-number check, based on the zero-expiry callback principle in cishim, and a separate experimental /slshim licensing-layer replacement with offline restore. SLShim includes interface profiles for the supplied Vista, Windows 7, Windows 8, Windows 8.1, and newer preview samples. The Build 15058 boundary for ordinary image/SPP workflows is restored: newer images only have LicensingUI.exe renamed and receive a prompt to use /cishim. The per-SKU SPP donor layout and the 10587 Legacy memtest.exe support are retained. SLShim remains an experimental feature; destination-system boot and expiry behavior still need testing. Download the complete binary ZIP from the [5.2 release, tag v5.2.0](https://github.com/AVMLOVER/FlightPatch/releases/tag/v5.2.0); GitHub's automatic source archives do not contain the built executables or DLL payloads. The earlier v5.2 tag remains the original experimental preview.
+Version 5.2.1 adds the two-stage MMC expiry repair, pairs `/cishim` with the
+compatible UEFI loader patch, and updates SLShim's edition handling, settings
+compatibility, Windows on Arm support, and backup cleanup. Download the complete
+binary ZIP from the [5.2.1 release](https://github.com/AVMLOVER/FlightPatch/releases/tag/v5.2.1).
 
 NT Timebomb Patch is an offline command-line tool for Windows prerelease images. It replaces NT6 licensing tokens and optional Branding, services older FlightSigned boot files, processes installation media, and rebuilds BIOS/UEFI ISOs with Microsoft OSCDIMG. The former FlightPatch command name remains available as a compatibility launcher.
 
 ## Requirements and permissions
 
-Extract the complete ZIP into a new directory. Run nttimebomb.cmd from an elevated Command Prompt on Windows, or a LocalSystem command prompt in Windows PE. The launcher selects the x86 or x64 executable for the current environment. The target architecture is detected separately. Use local drive paths shorter than MAX_PATH and quote paths containing spaces.
+Extract the complete ZIP into a new directory. Run nttimebomb.cmd from an elevated Command Prompt on Windows, or a LocalSystem command prompt in Windows PE. The launcher selects the x86, x64, or ARM64 executable for the current environment. The target architecture is detected separately. Use local drive paths shorter than MAX_PATH and quote paths containing spaces.
 
 For protected files, open a new privileged prompt with NSudo, change to the tool directory, and run the command there. Administrator elevation with backup and restore privileges is normally sufficient on Windows. In WinPE, use SYSTEM.
 
@@ -27,15 +30,105 @@ nttimebomb.cmd /cishim D:\Mount
 nttimebomb.cmd /cishim W:\
 ~~~
 
-This command processes only Windows\System32\ci.dll. It does not query the Windows build or require ntoskrnl.exe, SPP donors, PDBs, downloads, or a replacement shim at runtime. It leaves LicensingUI.exe, SPP, boot files, hvloader, WinRE, BCD, and kernels unchanged. Run /image first if you also want the normal newer-image LicensingUI rename, then run /cishim explicitly before committing your manually mounted image.
+This command prepares `Windows\System32\ci.dll` and `Windows\System32\winload.efi` as a pair. A missing, mismatched, or unsupported loader stops the operation before CI is written. It identifies compatible layouts without a build-number check. Run /image first if you also want the newer-image LicensingUI rename, then run /cishim before committing your manually mounted image.
 
 The expiry principle comes from [gailium119/cishim](https://github.com/gailium119/cishim/blob/c0ec25dbcb8e11109e24297c40d72c2ab6b24a8d/cishim/cishim.c): its CiGetBuildExpiryTime callback writes zero to the output and returns success. NT Timebomb Patch implements that behavior independently in the original CI. It identifies the preview's self-image expiry routine and confirms that CiInitialize registers it as a callback. The supplied preview 17746 and 29698 samples use different callback-table slots, both of which are checked structurally. An entry jump redirects to a small leaf routine in verified INT3 padding outside unwind-function ranges; the original unwind tables and other CI callbacks are retained. The full cishim module and its other signature-validation stubs are not bundled.
 
-For these newer preview callbacks, the verified target architecture is x64. Both the x86 and x64 tool executables can process those x64 samples. Existing earlier x86/x64 FlightSigned CI matching remains available under /cishim. A newer native x86 or ARM64 expiry callback is not currently verified and is rejected if its layout is unsupported. No build-number gate does not mean that an unknown machine-code layout can be patched safely: missing anchors, ambiguous matches, or unavailable leaf space cause a failure before writing.
+Newer preview CI replacement has file-level validation on the supplied x64 samples. The ARM64 build recognizes the already-zero callback on the supplied 28000 retail sample and skips writes. A nonzero ARM64 preview callback still needs an original preview sample. Missing anchors, ambiguous matches, or unavailable leaf space stop the operation before writing.
 
-Before the first write, the tool saves ci.dll.nttp-original beside the target CI, verifying its contents and copying owner, group, DACL, inheritance protection, and last-write time. The original CI is then edited in place, retaining its ACL and restoring its read-only attribute. A write failure attempts to restore the original bytes. Existing backups are never overwritten; a conflicting backup stops the write. Re-running /cishim recognizes its existing patch and makes no further changes. Preserve the original backup for offline recovery.
+Before writing, the tool saves a `.nttp-original` backup beside each file it will patch, with verified contents, owner, group, DACL, inheritance protection, and last-write time. It prepares and locks both changed files before writing either one. A write failure attempts to restore the original bytes. Existing backups are never overwritten. A conflicting backup stops the write. Re-running `/cishim` recognizes existing patches. Preserve the original backups for offline recovery.
 
 The patch changes a signed system binary; it does not regenerate Microsoft's signature or configure Secure Boot, HVCI, BCD, or the selected boot manager. The target boot chain must accept the modified file. Verification with the supplied preview files checks structural matching, patch bytes, checksum, repeat behavior, permissions, and file scope. Booting an expired preview and confirming MMC/Defender behavior still requires testing in that target system; stock release CI is not evidence of preview-expiry removal.
+
+On Build 18247 in a UEFI VM, the modified CI failed to boot with `0xc0000428`. Startup Settings option 7 (Disable Driver Signature Enforcement) allowed that boot. Ordinary boot failed again on restart. In the supplied 18247 `winload.efi`, `OslPrepareTarget` removes the `nointegritychecks` BCD option and the advanced boot menu can add it back later for a single session.
+
+### UEFI boot setup for 18247
+
+The matched loader patch preserves the explicit BCD option through its
+preparation step. The supplied 18247 loader with this patch and
+`nointegritychecks on` was verified on a UEFI VM without pressing F7. The
+older `/cishim-boot` command is still available if you need to patch just
+the loader. Normally `/cishim` applies both parts in one operation.
+
+Use a VM snapshot with Secure Boot disabled and Windows already installed. Start
+WinPE and identify the Windows partition (here `W:`) and the EFI System Partition
+(here `S:`). Confirm that the BCD entry uses `W:\Windows` and `\Windows\System32\winload.efi`.
+Use the actual entry GUID in place of `{default}` if needed. The example is for CMD.
+
+~~~bat
+bcdedit /store S:\EFI\Microsoft\Boot\BCD /enum {default}
+bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {default} nointegritychecks on
+nttimebomb.cmd /cishim W:\
+~~~
+
+The loader backup is `Windows\System32\winload.efi.nttp-original`. The BCD commands
+apply to the selected Windows entry. Recovery can remain enabled. If boot fails, restore the snapshot or use
+WinPE to restore both `.nttp-original` files and the original BCD setting. If
+`nointegritychecks` was absent before the test, remove it with
+`bcdedit /store S:\EFI\Microsoft\Boot\BCD /deletevalue {default} nointegritychecks`.
+`check-boot` can inspect loaders and a supplied EFI System Partition without writing.
+
+## MMC certificate-expiry repair
+
+Use both steps on a test installation whose original MMC is blocked by an
+expired catalog signature. The two commands cover the MMC publisher check and
+the separate AppInfo automatic elevation check.
+
+### 1. Install the local MMC signature in Windows
+
+After completing OOBE and reaching the desktop, open an elevated Command Prompt
+inside the test Windows installation and run:
+
+```bat
+nttimebomb.cmd /mmc
+```
+
+The command checks the running system's native `System32\mmc.exe` and requires a
+matching Microsoft catalog signature whose sole trust error is certificate
+expiry. It stages a copy of that executable with an embedded local signature.
+A marker at the file end gives it a different signing hash so Windows takes
+the embedded signature path. The executable's code and resources are kept.
+The command adds the public certificate to `LocalMachine\Root` and
+`LocalMachine\TrustedPublisher` after releasing the signing key. It checks
+signature and publisher trust before and after publication. The original
+executable is saved under `%SystemRoot%\NTTP-MMC-*\original.exe`. Keep the
+native MMC helper beside the main executable. Images with an existing embedded
+MMC signature or force-integrity protection are outside this mode's scope.
+
+### 2. Service AppInfo in WinPE or from another Windows installation
+
+Shut down the target after `/mmc` succeeds. From a SYSTEM Command Prompt in
+WinPE, or an elevated prompt in another Windows installation, run:
+
+```bat
+nttimebomb.cmd /mmc-approval W:\
+```
+
+Replace `W:\` with the deployed NTFS volume or offline root containing
+`Windows\System32\appinfo.dll`. The tool identifies the sorted approval table
+and verifies its PE pointer relocations without a build-number or fixed-offset
+check. It removes only MMC from the list so it can use normal UAC confirmation.
+Unknown and ambiguous layouts stop before replacement. The target must permit
+the modified AppInfo to load. On the tested 18247 VM, AppInfo's
+`MicrosoftSignedOnly` process setting was off and auditing was enabled.
+
+Boot the target and open **Disk Management from Win+X** to check the original
+entry and UAC prompt. The full two-stage flow passed on 18247 x64. The supplied
+16299, 22000, and 29698 x64 files passed offline patch and restore tests.
+
+### Roll back both stages
+
+In WinPE or from another Windows installation, restore the original AppInfo:
+
+```bat
+nttimebomb.cmd /mmc-approval-restore W:\
+```
+
+AppInfo's original NTFS file and permissions are kept at
+`Windows\System32\appinfo.dll.nttp-mmc-original`. Then boot the target and run
+`nttimebomb.cmd /mmc-restore` in an elevated prompt to restore MMC and remove its
+local certificate. Restore both stages before servicing the original files
+with a system update. Either restore stops if the installed file has changed.
 
 ## Experimental SLShim licensing-layer replacement
 
@@ -54,9 +147,36 @@ nttimebomb.cmd /slshim-restore D:\Mount
 with the target's original licensing DLLs. A flat extraction such as the analysis
 samples is not a deployable target. Use Windows 10 / WinPE 10 or newer as the
 servicing host. Keep the complete `slshim` and `dependencies` directories beside
-both executables. The tool selects target architecture separately from host
-architecture, so the x86 executable can service an offline x64 image. Native
-ARM64 targets are not supported by this mode.
+the executables. The tool selects target architecture separately from host
+architecture. For the supplied Windows on Arm interface, the package includes
+ARM64X forwarders for native ARM64 and emulated x64 applications plus the x86
+payload for SysWOW64. Matching checks the original export names and ordinals.
+
+Win32 error 32 is a sharing violation. Check whether the named offline registry
+hive is still loaded by the servicing utility or by a manual registry mount.
+Close the utility or unload the hive you loaded before retrying. Running as
+SYSTEM does not clear the lock. A failed registry preflight can leave a zero-byte
+`operation.lock`; that file alone is not evidence of installation. Look for the
+successful install message and `NTTimebombBackup\SLShim\state.bin`.
+The parent `NTTimebombBackup` directory has the Hidden and System attributes.
+
+The offline installer checks the target edition's default PPD license for
+`DataProtectionUnderLock-WindowsCore-Enabled`. When the original SKU file sets it
+to zero and `ProductPolicy` lacks it, SLShim includes that default in the policy
+installed for the first boot. Build 18247's AppX state extension queries this
+value while registering OOBE and the Start menu. The same rule fills in the
+stock zero for `shell32-license-ShowProductNameOnDesktop`, which the 18247 shell
+otherwise treats as an instruction to draw the product-name watermark.
+
+SLShim uses the offline image's `EditionID`. If its cached kernel identity
+still matches a different `CompositionEditionID`, the installer reads the
+original PPD for the selected SKU and corrects its kernel edition, product
+and branding values. For example, a Professional image may initially contain
+an Enterprise composition cache. The original registry edition and composition
+metadata are retained. To update an earlier SLShim install, restore it in
+WinPE and reinstall with the new package. A successful restore clears SLShim's
+backup and removes the parent directory when it is empty. A new install can
+also clear a completed restore left by an earlier package.
 
 The installer checks the original export names and ordinals before allowing a
 replacement. These interface profiles are included:
@@ -421,7 +541,8 @@ PowerShell users must quote identifiers such as '{default}'. Secure Boot must pe
 Use Zig 0.15.2 and Python 3 from the repository root. Python is needed only to
 build the SLShim payloads, not to run the packaged tool. Fetch the pinned
 Microsoft libraries, build the payloads and generated fingerprints, then compile
-the two main executables. Rebuild both executables whenever payloads change.
+the main executables and MMC helpers for each architecture. Rebuild the main
+executables whenever payloads change.
 The core program has no PowerShell dependency. Only the applicable modes invoke
 DISM, 7-Zip, or OSCDIMG.
 
@@ -431,7 +552,11 @@ python tools/build-slshim.py C:\Tools\zig\zig.exe
 zig rc /fo as-invoker.res -- src/flightpatch.rc
 zig cc -target x86-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -o nttimebomb-x86.exe
 zig cc -target x86_64-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -o nttimebomb-x64.exe
-python tools/package.py D:\Output\nt-timebomb-patch-v5.2-winpe.zip
+zig cc -target aarch64-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -o nttimebomb-arm64.exe
+zig cc -target x86-windows-gnu -municode -std=c11 -Oz -s src/mmc.c as-invoker.res -ladvapi32 -lbcrypt -lwintrust -lcrypt32 -lncrypt -o nttimebomb-mmc-x86.exe
+zig cc -target x86_64-windows-gnu -municode -std=c11 -Oz -s src/mmc.c as-invoker.res -ladvapi32 -lbcrypt -lwintrust -lcrypt32 -lncrypt -o nttimebomb-mmc-x64.exe
+zig cc -target aarch64-windows-gnu -municode -std=c11 -Oz -s src/mmc.c as-invoker.res -ladvapi32 -lbcrypt -lwintrust -lcrypt32 -lncrypt -o nttimebomb-mmc-arm64.exe
+python tools/package.py D:\Output\nt-timebomb-patch-v5.2.1-winpe.zip
 ~~~
 
 Maintainers extending the interface profiles can run

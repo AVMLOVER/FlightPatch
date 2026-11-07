@@ -8,6 +8,7 @@ root = Path(__file__).resolve().parents[1] / 'dependencies'
 sources = [
     ('offreg-x86.dll', '39F397A413000', 'da796eece1555a506dd9639dcbaa97d269dccff418e2901bdc633b9f99609e22'),
     ('offreg-x64.dll', '0A2A462F1b000', '11d89ec186dc27b220bc573b3d4686dedf8cf1d571af33bbbb0ce89b771ef362'),
+    ('offreg-arm64.dll', 'DA237CAC35000', '059d6eb0e9a406eaf69cad82719c3ae4e270ba5d5ec5ee834fade7340438252e'),
 ]
 downloads = []
 for name, identity, expected in sources:

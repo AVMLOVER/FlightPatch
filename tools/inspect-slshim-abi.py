@@ -12,7 +12,8 @@ implemented={'SLOpen','SLClose','SLConsumeRight','SLGetLicensingStatusInformatio
  'SLGetPolicyInformation','SLGetPolicyInformationDWORD','SLGetApplicationInformation','SLGetPKeyInformation',
  'SLGetGenuineInformation','SLGetWindowsInformation','SLGetWindowsInformationDWORD','SLIsGenuineLocal',
  'SLIsGenuineLocalEx','SLIsWindowsGenuineLocal','SLInstallLicense',
- 'SLLoadApplicationPolicies','SLUnloadApplicationPolicies'}
+ 'SLLoadApplicationPolicies','SLUnloadApplicationPolicies','SLpIsCurrentInstalledProductKeyDefaultKey',
+ 'SLRegisterWindowsEvent','SLUnregisterWindowsEvent'}
 aliases={'SLGetProductSkuInformation':'SLGetPKeyInformation','SLGetServiceInformation':'SLGetPolicyInformation',
          'SLGetApplicationPolicy':'SLGetPolicyInformation','SLpGetGenuineLocal':'SLIsGenuineLocalEx',
          'SLGetGenuineInformationEx':'SLGetGenuineInformation'}

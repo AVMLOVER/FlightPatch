@@ -81,17 +81,26 @@ static BOOL offline_under(const wchar_t *path, const wchar_t *directory)
            (directory[length - 1] == L'\\' || path[length] == L'\\');
 }
 
-static BOOL offline_directory(const wchar_t *path, wchar_t final[OFFLINE_NT_PATH])
+static BOOL offline_directory_info(const wchar_t *path, wchar_t final[OFFLINE_NT_PATH],
+                                   BY_HANDLE_FILE_INFORMATION *info)
 {
     HANDLE dir = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                              NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
     if (dir == INVALID_HANDLE_VALUE)
         return FALSE;
-    BY_HANDLE_FILE_INFORMATION info;
-    BOOL ok = GetFileInformationByHandle(dir, &info) && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+    BOOL ok = GetFileInformationByHandle(dir, info) && (info->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
               offline_path_name(dir, final);
+    DWORD error = GetLastError();
     CloseHandle(dir);
+    if (!ok)
+        SetLastError(error);
     return ok;
+}
+
+static BOOL offline_directory(const wchar_t *path, wchar_t final[OFFLINE_NT_PATH])
+{
+    BY_HANDLE_FILE_INFORMATION info;
+    return offline_directory_info(path, final, &info);
 }
 
 static BOOL offline_absent(DWORD error)

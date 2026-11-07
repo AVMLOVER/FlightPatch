@@ -160,6 +160,20 @@ HRESULT WINAPI SLIsGenuineLocalEx(const GUID *app,void *a,DWORD *state)
 { (void)a;return SLIsGenuineLocal(app,state,NULL); }
 HRESULT WINAPI SLIsWindowsGenuineLocal(DWORD *state)
 { return SLIsGenuineLocal(NULL,state,NULL); }
+HRESULT WINAPI SLpIsCurrentInstalledProductKeyDefaultKey(const void *application,BOOL *is_default)
+{
+    if(!application || !is_default)return E_INVALIDARG;
+    *is_default=FALSE;
+    return S_OK;
+}
+HRESULT WINAPI SLRegisterWindowsEvent(const wchar_t *name,HANDLE event)
+{
+    /* The shim's Windows licensing status is fixed for the life of the process.
+       Accept the subscription without taking ownership or signaling the event. */
+    return name && event ? S_OK : E_INVALIDARG;
+}
+HRESULT WINAPI SLUnregisterWindowsEvent(const wchar_t *name,HANDLE event)
+{ return SLRegisterWindowsEvent(name,event); }
 HRESULT WINAPI SLInstallLicense(void *handle,UINT size,const BYTE *license,GUID *out)
 { (void)handle;(void)size;(void)license;if(!out)return E_INVALIDARG;memset(out,0,sizeof *out);return S_OK; }
 

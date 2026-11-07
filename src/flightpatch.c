@@ -119,7 +119,8 @@ static BOOL fix_checksum(BYTE *data, DWORD size)
     memcpy(&machine, data + pe_offset + 4, sizeof machine);
     memcpy(&magic, data + pe_offset + 24, sizeof magic);
     BOOL pe32 = machine == IMAGE_FILE_MACHINE_I386 && magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC;
-    BOOL pe64 = machine == IMAGE_FILE_MACHINE_AMD64 && magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+    BOOL pe64 = (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64) &&
+                magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
     if (signature != IMAGE_NT_SIGNATURE || (!pe32 && !pe64))
         return FALSE;
 
@@ -443,6 +444,7 @@ static unsigned image_build(const wchar_t *root, BOOL boot_wim)
 
 #include "ci_expiry.h"
 #include "slshim_install.h"
+#include "mmc_approval.h"
 
 static void suggest_ci(void)
 {
@@ -525,9 +527,37 @@ static BOOL service_image(const wchar_t *root, void *context)
 
 #include "media.h"
 
+static int run_mmc(int argc, wchar_t **argv)
+{
+    if (argc != 2 || in_winpe()) {
+        fwprintf(stderr, L"Use nttimebomb /mmc or /mmc-restore in the running test Windows after OOBE.\n");
+        return 2;
+    }
+#if defined(__aarch64__)
+    static const wchar_t name[] = L"nttimebomb-mmc-arm64.exe";
+#elif defined(_WIN64)
+    static const wchar_t name[] = L"nttimebomb-mmc-x64.exe";
+#else
+    static const wchar_t name[] = L"nttimebomb-mmc-x86.exe";
+#endif
+    wchar_t path[PATH_SIZE];
+    DWORD length = GetModuleFileNameW(NULL, path, PATH_SIZE);
+    wchar_t *leaf = length && length < PATH_SIZE ? wcsrchr(path, L'\\') : NULL;
+    if (!leaf || (size_t)(leaf + 1 - path) + ARRAYSIZE(name) > PATH_SIZE) return 1;
+    wcscpy(leaf + 1, name);
+    if (!spp_path_type(path, FALSE, FALSE)) {
+        fwprintf(stderr, L"Missing %ls. Extract the complete NT Timebomb Patch package.\n", path);
+        return 1;
+    }
+    wchar_t command[64];
+    swprintf(command, ARRAYSIZE(command), L"%ls %ls", name,
+             !_wcsicmp(argv[1], L"/mmc") ? L"/mmc" : L"/mmc-restore");
+    return run_tool(path, command, NULL) ? 0 : 1;
+}
+
 static int help(void)
 {
-    wprintf(L"NT Timebomb Patch 5.2\n\n"
+    wprintf(L"NT Timebomb Patch 5.2.1\n\n"
             L"Use an elevated command prompt for offline servicing. In WinPE use SYSTEM.\n"
             L"All paths must be local drive paths under MAX_PATH. Quote paths containing spaces.\n\n"
             L"EXPERIMENTAL COMPLETE WINDOWS LICENSING SHIM\n"
@@ -544,18 +574,34 @@ static int help(void)
             L"license or online activation. Unsupported licensing APIs return explicit errors.\n"
             L"This mode is never implied by /image, /spp, /nt6, /media or /cishim. It does not\n"
             L"change CI, boot files, kernels or LicensingUI. Apply /cishim separately if needed.\n\n"
+            L"EXPERIMENTAL MMC CERTIFICATE EXPIRY EXCEPTION\n"
+            L"  nttimebomb /mmc\n"
+            L"  nttimebomb /mmc-restore\n"
+            L"Run as administrator inside the installed test Windows after OOBE. Requires a\n"
+            L"matching original Microsoft catalog signature whose only trust error is expiry.\n"
+            L"Adds a local embedded signature to native mmc.exe and keeps the original file.\n"
+            L"Test the original MMC entry point and UAC prompt. /mmc-restore restores the\n"
+            L"original executable and removes the local certificate.\n"
+            L"  nttimebomb /mmc-approval OFFLINE_WINDOWS_ROOT\n"
+            L"  nttimebomb /mmc-approval-restore OFFLINE_WINDOWS_ROOT\n"
+            L"Offline AppInfo automatic-approval table repair. Unknown layouts are rejected.\n\n"
             L"CI BUILD-EXPIRY PATCH\n"
             L"  nttimebomb /cishim OFFLINE_WINDOWS_ROOT\n"
             L"Example: nttimebomb /cishim D:\\mount\n"
-            L"Only Windows\\System32\\ci.dll is processed. No build/version query is used.\n"
+            L"Processes System32\\ci.dll and a structurally compatible System32\\winload.efi.\n"
+            L"A missing or unsupported UEFI loader stops the operation before CI is written.\n"
+            L"Recognizes an ARM64 CI that already returns zero without changing the loader.\n"
+            L"No build/version query is used.\n"
             L"Preview x64 expiry callbacks are identified structurally and return a zero expiry\n"
             L"time with success. Existing earlier x86/x64 FlightSigned CI rules are also accepted.\n"
             L"Unknown or ambiguous structures fail without writing. Native x86 newer preview\n"
             L"expiry callbacks are not yet verified; x86 hosts can service the x64 samples.\n"
-            L"The original CI and its permissions are saved as ci.dll.nttp-original before writing.\n"
-            L"Existing backups are never overwritten. Retry recognizes an already patched CI.\n"
-            L"This command does not rename LicensingUI or change SPP, boot files, BCD or kernels.\n"
-            L"The target boot chain must accept the modified CI; signatures are not regenerated.\n\n"
+            L"Backups beside each changed file use .nttp-original and retain its permissions.\n"
+            L"Existing backups are never overwritten. Retry recognizes already patched files.\n"
+            L"With the patched loader, set nointegritychecks on in the target Windows BCD\n"
+            L"entry, with Secure Boot off. The tool prints a command and leaves BCD to you.\n"
+            L"  nttimebomb /cishim-boot OFFLINE_WINDOWS_ROOT\n"
+            L"Compatibility command for the UEFI loader patch alone. See README for steps.\n\n"
             L"NT6 TOKENS AND OPTIONAL BRANDING\n"
             L"  nttimebomb /nt6 /file DONOR_FOLDER /target OFFLINE_WINDOWS_ROOT\n"
             L"Copies only System32\\spp\\tokens from the donor. A donor may be its image root,\n"
@@ -611,8 +657,9 @@ static int help(void)
 static int run_ci(int argc, wchar_t **argv)
 {
     wchar_t root[PATH_SIZE];
+    BOOL loader = !_wcsicmp(argv[1], L"/cishim-boot");
     if (argc != 3 || !normalize(root, argv[2]) || !offline_root(root, FALSE)) {
-        fwprintf(stderr, L"Usage: nttimebomb /cishim OFFLINE_WINDOWS_ROOT\nExample: nttimebomb /cishim D:\\mount\n");
+        fwprintf(stderr, L"Usage: nttimebomb %ls OFFLINE_WINDOWS_ROOT\n", argv[1]);
         return 2;
     }
     if ((in_winpe() && !is_system()) || !enable_privilege(L"SeBackupPrivilege") || !enable_privilege(L"SeRestorePrivilege")) {
@@ -622,10 +669,8 @@ static int run_ci(int argc, wchar_t **argv)
     BCRYPT_ALG_HANDLE algorithm;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
         return 1;
-    BOOL ok = patch_ci_only(algorithm, root);
+    BOOL ok = patch_ci_file(algorithm, root, loader);
     BCryptCloseAlgorithmProvider(algorithm, 0);
-    if (!ok)
-        privilege_hint();
     return ok ? 0 : 1;
 }
 
@@ -926,9 +971,13 @@ static int check_boot(int argc, wchar_t **argv)
 
 int wmain(int argc, wchar_t **argv)
 {
+    if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc") || !_wcsicmp(argv[1], L"/mmc-restore")))
+        return run_mmc(argc, argv);
+    if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc-approval") || !_wcsicmp(argv[1], L"/mmc-approval-restore")))
+        return run_mmc_approval(argc, argv);
     if(argc>=2 && (!_wcsicmp(argv[1],L"/slshim") || !_wcsicmp(argv[1],L"/slshim-restore")))
         return run_slshim(argc,argv);
-    if (argc >= 2 && !_wcsicmp(argv[1], L"/cishim"))
+    if (argc >= 2 && (!_wcsicmp(argv[1], L"/cishim") || !_wcsicmp(argv[1], L"/cishim-boot")))
         return run_ci(argc, argv);
     if (argc == 1 || (argc == 2 && (!_wcsicmp(argv[1], L"/?") || !_wcsicmp(argv[1], L"/help") ||
                                    !_wcsicmp(argv[1], L"--help"))))

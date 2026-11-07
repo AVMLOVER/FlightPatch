@@ -89,7 +89,8 @@ static WORD spp_pe_machine(const wchar_t *path)
     if (!ok)
         return 0;
     WORD machine = u16(pe + 4), magic = u16(pe + 24);
-    return (machine == IMAGE_FILE_MACHINE_AMD64 && magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) ||
+    return ((machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64) &&
+            magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) ||
            (machine == IMAGE_FILE_MACHINE_I386 && magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) ?
            machine : 0;
 }

@@ -1,4 +1,4 @@
-# 5.2 validation
+# 5.2.1 validation
 
 The supplied preview samples, rather than stock release CI, were used to validate the expiry modification:
 
@@ -23,9 +23,96 @@ The production CLI still requires its usual privileges. After the initial UAC ca
 
 The CI switch was subsequently renamed from /ci to /cishim. Both production binaries passed a further elevated /cishim test on a file owned by NT SERVICE\\TrustedInstaller, with a protected DACL granting Administrators read/execute rather than write access, and the read-only attribute set. Patch, original backup, owner/DACL preservation, read-only restoration, and repeat recognition all passed. No UAC bypass was used. Read-only and CLI naming changes did not alter the expiry patch bytes.
 
-No target-system boot, expired MMC, or expired Defender execution test was possible here. Those outcomes remain to be tested in the destination VM or computer. Native x86 newer-preview and ARM64 expiry callbacks are not verified. The archive contains no Windows samples, patched Windows binaries, PDBs, or QA helper executables.
+Native x86 newer-preview and ARM64 expiry callbacks still need target testing.
+The archive excludes Windows samples, patched Windows binaries, PDBs, and QA
+helper executables.
+
+## 29602 and Windows on Arm
+
+- The 29602 x64 CI and UEFI loader both matched, and a second pass recognized
+  each edit. The older 18247 loader still matched. The 28000 ARM64 retail CI
+  already returns zero, and the ARM64 loader matcher recognized the supplied
+  option-removal sequence. A real nonzero ARM64 preview callback and the 29602
+  VM boot still need destination testing.
+- The 29602 and ARM64X licensing samples match the supplied 29698 export
+  profile. Native ARM64 and emulated x64 test processes loaded all five
+  generated ARM64X forwarders, resolved every named and ordinal export,
+  selected the correct runtime, and verified the typed default-key call.
+  Settings and the complete WoA image deployment still need destination testing.
+
+## Experimental MMC validation
+
+The embedded signature helper checks four signature modes used by the UAC
+path and requires trusted-publisher status when requesting publisher trust.
+A private executable and an in-memory certificate store verified staging,
+registration and repeated removal of the exact publisher certificate, and
+restoration of the original executable hash.
+
+On 18247 x64, the VM reported valid MMC signature and publisher trust while
+Win+X still produced the red UAC dialog. The matching AppInfo sample places
+MMC in the Windows automatic approval list and checks the Windows catalog
+separately. The offline approval test removes only MMC from the list. On a
+private NTFS copy, install, retry, restore and reinstall passed, and restore
+recovered the original hash and security descriptor. The user then verified
+that the original Win+X MMC entry opened in the 18247 VM with both stages
+applied. AppInfo binary signature enforcement was in audit mode.
+
+The release matcher reproduced the verified 18247 patch byte for byte. The
+supplied x64 samples 16299.15, 22000.2600, and 29698.1000 passed install, repeat,
+restore, and reinstall. Additional file tests passed on x64 samples from
+10240, 14393, 22000, 26100, and 28000, the 28000 ARM64 AppInfo sample, and a
+synthetic x86 PE table. Unknown files, missing table relocations, force
+integrity, and two matching tables were rejected. These file tests establish
+patch and rollback behavior. The 18247 run establishes the end-to-end MMC
+result for that VM.
+
+The original Build 18247 native MMC matched its Microsoft catalog by PE
+signature hash. The signing certificate expired on December 14, 2018 UTC.
+Both host architectures generated a separate catalog and a public certificate.
+Independent checks verified the catalog signature and its certificate with an
+in-memory trust store, then confirmed that Windows rejected the catalog for
+the Build 18362 MMC. The host certificate store was untouched. Catalog
+selection in the guest led to the embedded-signature approach below.
+
+After the 18247 guest returned `0x800B0101`, the verifier was changed to
+read the signer from the exact signature object and rebuild its code-signing
+chain. The original catalog was accepted as expiry-only with Microsoft's
+development root in an isolated in-memory chain engine. Verification rejected
+the same catalog without that trust and rejected a different catalog under
+the isolated trust.
+
+The 18247 guest then rejected the local catalog. The system's catalog path
+enforces Microsoft's root policy. The new test uses an embedded signature on
+a private MMC copy with an end marker to change its signing hash. Independent
+PE checks found that the original bytes only changed in the checksum and
+certificate-table fields. The original catalog rejected the new SHA-1 and
+SHA-256 member hashes. The Windows signature query classified the staged
+copy as embedded Authenticode. A private-file transaction recovered the
+original bytes and ACL.
 
 ## Experimental SLShim validation
+
+The 29602 Settings crash dump entered `UnregisterWait` from the licensing
+state handler. Its initialization exits early when `SLRegisterWindowsEvent`
+fails, leaving a later wait handle uninitialized. The new register and
+unregister exports were tested through the generated x86, x64 and ARM64X SLC
+forwarders. The calls accept the event without signaling or closing it.
+The user retested the 29602 Settings page successfully in the destination VM.
+
+Private offline fixtures covered cleanup after a completed restore, retry
+after partial cleanup, a read-only backup file, a leftover lock, and a new
+install's cleanup of an old completed restore. An unrelated sibling backup
+was preserved.
+
+On a private copy of the Build 18247 SYSTEM and SOFTWARE hives, the installer
+read the stock Professional default PPD and added
+`DataProtectionUnderLock-WindowsCore-Enabled` as DWORD zero to both the selected
+control set and the shim policy cache. The original Professional image then
+completed OOBE in the guest. The subsequent SKU fix was verified on the original
+Professional hive and private variants with ProfessionalWorkstation and
+Enterprise edition IDs, using their original PPD files. Targeted restore
+recovered the original policy byte for byte and preserved an unrelated registry
+marker. Guest confirmation of the corrected SKU and watermark remains pending.
 
 The original 17746 Professional and 29698 ProfessionalWorkstation preview DLLs
 and SYSTEM/SOFTWARE hives were used through private fixtures. Original samples
@@ -165,3 +252,12 @@ Destination VM tests must still cover service startup, early boot, OOBE,
 sign-in, and behavior after the original expiry date. An absent policy expiration
 entry in 8032 or 9431 does not prove that other expiry checks are absent. The
 formal 5.2 package is tagged v5.2.0; the v5.2 preview tag remains unchanged.
+
+## Build 18247 diagnostics
+
+- A supplied UEFI VM with Secure Boot disabled returned `0xc0000428` with the modified CI. Restoring only the original CI allowed that VM to boot. The modified CI in the offline mount matched the locally generated patch byte for byte, and Authenticode returned `HashMismatch`. The VM's active EFI and BCD have not been inspected.
+- Both offline hives in the 18247 mount returned Win32 32 while loaded under the host registry. After the hives were released, copies of both were readable. On private copies, holding either `SYSTEM` or `SOFTWARE` open exclusively reproduced Win32 32 and reported the exact file without producing staged hives or changing the inputs. With the handles closed, staged registry installation and targeted restore passed, including preservation of an unrelated setting. This did not exercise VM boot or OOBE.
+- On the supplied 18247 x64 loader, `/cishim-boot` changes the five-byte call that removes `nointegritychecks` and updates the PE checksum. The loader's original hash, backup permissions, read-only attribute, repeat recognition, and rejection of the supplied `bootmgfw.efi` under a loader filename were checked. The user verified normal UEFI boot with both patches and `nointegritychecks on`, and reported working personalization and Defender and removal of the preview watermark and expiry time.
+- The SLShim ACL update was checked by reading the staged 18247 SYSTEM hive and by applying the shim file DACL to a private test file. Both application-package principals have read-only access to the policy key and read/execute access to the file. The 18247 `ProductPolicy` change remained the single byte for `Kernel-NonGenuineNotificationType`. The Start menu and OOBE need destination VM tests.
+- The original `/cishim-boot` guard rejected an offline loader if the running environment had no `System32\winload.efi`. A fixture with that layout reproduced the failure. After the fix, the 18247 loader patched and backed up successfully, including when the running Windows directory was on a separate volume and the offline loader had two hard links. A hard link to the running loader was still rejected. A missing offline loader reported its path and Win32 error 2.
+- Integrated `/cishim` produced the same CI and loader hashes as the separately tested commands. Repeating it, upgrading from an already-patched CI, and falling back to the CI patch when the loader was missing or unsupported all passed. With a simulated partial write to CI after updating the loader, both original hashes and the loader's read-only attribute were restored.

@@ -1,7 +1,7 @@
 #include "slshim_policy.h"
 #include "slshim_payloads.h"
 #include "offline_registry.h"
-enum { SL_FILES=14, SL_BACKUP_VERSION=1 };
+enum { SL_OLD_FILES=14, SL_FILES=15, SL_BACKUP_VERSION=1 };
 typedef struct {
     wchar_t relative[96];
     char original[65],installed[65];
@@ -54,7 +54,12 @@ static BOOL sl_payload_file(BCRYPT_ALG_HANDLE algorithm,const SlPayload *payload
 static BOOL sl_registry_load(BCRYPT_ALG_HANDLE algorithm,SlRegistry *api)
 {
     wchar_t path[PATH_SIZE];
-    if(!sl_payload_file(algorithm,&sl_offreg_payloads[sizeof(void *)==8],path))return FALSE;
+#if defined(__aarch64__)
+    unsigned host=2;
+#else
+    unsigned host=sizeof(void *)==8;
+#endif
+    if(!sl_payload_file(algorithm,&sl_offreg_payloads[host],path))return FALSE;
     api->module=LoadLibraryExW(path,NULL,LOAD_WITH_ALTERED_SEARCH_PATH);
     if(!api->module){fwprintf(stderr,L"Cannot load Offline Registry Library (Win32 %lu).\n",GetLastError());return FALSE;}
 #define SL_IMPORT(field,name) do { FARPROC p=GetProcAddress(api->module,name); memcpy(&api->field,&p,sizeof p); if(!p)return FALSE; } while(0)
@@ -67,7 +72,7 @@ static BOOL sl_registry_load(BCRYPT_ALG_HANDLE algorithm,SlRegistry *api)
 }
 static BOOL sl_export_match(const Image *image,const SlLibrary *library)
 {
-    if((image->x64?IMAGE_FILE_MACHINE_AMD64:IMAGE_FILE_MACHINE_I386)!=library->machine)return FALSE;
+    if(image->machine!=library->machine)return FALSE;
     DWORD directory=image->pe+24+(image->x64?0x70:0x60);
     if(directory+8>image->section_table)return FALSE;
     DWORD raw=translate(image,u32(image->bytes+directory),FALSE,FALSE);
@@ -99,7 +104,7 @@ static BOOL sl_export_match(const Image *image,const SlLibrary *library)
 static const SlLibrary *sl_library(BCRYPT_ALG_HANDLE algorithm,const wchar_t *path,const wchar_t *module)
 {
     HANDLE file=spp_open(path,GENERIC_READ,OPEN_EXISTING);Output data={0};Image image;
-    BOOL ok=file!=INVALID_HANDLE_VALUE && offline_read(file,&data,algorithm) && image_open(&image,data.data,data.size);
+    BOOL ok=file!=INVALID_HANDLE_VALUE && offline_read(file,&data,algorithm) && image_open_arch(&image,data.data,data.size,TRUE);
     if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);
     const SlLibrary *match=NULL;
     for(unsigned i=0;ok && i<sizeof sl_libraries/sizeof *sl_libraries;++i)
@@ -132,7 +137,8 @@ static BOOL sl_new_metadata(const wchar_t *file)
     PSECURITY_DESCRIPTOR descriptor=NULL;
     if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(
         L"O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:SYD:"
-        L"(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;BU)",SDDL_REVISION_1,&descriptor,NULL))return FALSE;
+        L"(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;BU)"
+        L"(A;;GRGX;;;AC)(A;;GRGX;;;S-1-15-2-2)",SDDL_REVISION_1,&descriptor,NULL))return FALSE;
     HANDLE handle=spp_open(file,WRITE_OWNER|WRITE_DAC,OPEN_EXISTING);
     BOOL ok=handle!=INVALID_HANDLE_VALUE && SetKernelObjectSecurity(handle,
         OWNER_SECURITY_INFORMATION|GROUP_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,descriptor);
@@ -147,7 +153,8 @@ static BOOL sl_manifest_io(const wchar_t *path,SlBackup *backup,BOOL write)
     if(file==INVALID_HANDLE_VALUE)return FALSE;
     DWORD size=0;
     BOOL ok=write?WriteFile(file,backup,sizeof *backup,&size,NULL):ReadFile(file,backup,sizeof *backup,&size,NULL);
-    ok=ok && size==sizeof *backup;
+    const DWORD legacy_size=sizeof *backup-(SL_FILES-SL_OLD_FILES)*sizeof backup->files[0];
+    ok=ok && (size==sizeof *backup || (!write && size==legacy_size && backup->count<=SL_OLD_FILES));
     if(write)ok=ok && FlushFileBuffers(file);
     CloseHandle(file);
     if(write) {
@@ -172,20 +179,164 @@ static BOOL sl_root(const wchar_t *root)
            _wcsicmp(a,b) && !offline_under(a,b);
 }
 
-static DWORD sl_config_hives(SlRegistry *api,const wchar_t *system,const wchar_t *software,
+static DWORD sl_hive_io_error(const wchar_t *operation,const wchar_t *path,DWORD error)
+{
+    if(error) {
+        fwprintf(stderr,L"Cannot %ls SLShim registry hive %ls (Win32 %lu).\n",operation,path,error);
+        if(error==ERROR_SHARING_VIOLATION)
+            fwprintf(stderr,L"Close any servicing tool that loaded the offline hives, or unload the offline hives you loaded manually, then retry. SYSTEM privileges do not clear a sharing violation.\n");
+    }
+    return error;
+}
+
+static BOOL sl_policy_add_zero_default(BYTE **data,DWORD *size,const wchar_t *name)
+{
+    DWORD type=0,length=0;const BYTE *value=NULL;
+    DWORD error=sl_policy_get(*data,*size,name,&type,&value,&length);
+    if(error==ERROR_SUCCESS)return type==REG_DWORD && length==sizeof(DWORD);
+    if(error!=ERROR_FILE_NOT_FOUND)return FALSE;
+    const WORD name_bytes=(WORD)(wcslen(name)*sizeof(wchar_t));
+    const WORD entry_bytes=(16+name_bytes+sizeof(DWORD)+3)&~3;
+    if(*size>SL_POLICY_MAX-entry_bytes)return FALSE;
+    BYTE *grown=realloc(*data,*size+entry_bytes);
+    if(!grown)return FALSE;
+    *data=grown;
+    BYTE *entry=grown+*size-4;
+    memcpy(entry+entry_bytes,entry,4);
+    memset(entry,0,entry_bytes);
+    const WORD header[]={entry_bytes,name_bytes,REG_DWORD,sizeof(DWORD)};
+    memcpy(entry,header,sizeof header);
+    memcpy(entry+16,name,name_bytes);
+    *size+=entry_bytes;
+    DWORD payload=*size-24;
+    memcpy(grown,size,4);
+    memcpy(grown+4,&payload,4);
+    return TRUE;
+}
+static char *sl_stock_ppd(const wchar_t *root,const wchar_t *edition,BOOL defaults)
+{
+    for(const wchar_t *p=edition;*p;++p)
+        if(!((*p>=L'A' && *p<=L'Z') || (*p>=L'a' && *p<=L'z') || (*p>=L'0' && *p<=L'9')))return NULL;
+    wchar_t path[PATH_SIZE],relative[280];
+    if(!*edition || swprintf(relative,ARRAYSIZE(relative),
+        L"Windows\\System32\\spp\\tokens\\skus\\%ls\\%ls%ls-ppdlic.xrm-ms",edition,defaults?L"DefaultPpd-":L"",edition)<0 ||
+        !build_path(path,root,relative) || !spp_path_chain(path,FALSE) ||
+        !spp_path_type(path,FALSE,FALSE))return NULL;
+    HANDLE file=spp_open(path,GENERIC_READ,OPEN_EXISTING);
+    if(file==INVALID_HANDLE_VALUE)return NULL;
+    LARGE_INTEGER bytes;
+    BOOL sized=GetFileSizeEx(file,&bytes) && bytes.QuadPart>0 && bytes.QuadPart<=SL_POLICY_MAX;
+    char *xml=sized?malloc((size_t)bytes.QuadPart+1):NULL;
+    DWORD read=0;
+    BOOL ok=xml && ReadFile(file,xml,(DWORD)bytes.QuadPart,&read,NULL) && read==(DWORD)bytes.QuadPart;
+    CloseHandle(file);
+    if(ok){xml[read]=0;return xml;}
+    free(xml);
+    return NULL;
+}
+
+static BOOL sl_ppd_identity_number(const char *xml,const char *name,DWORD *number)
+{
+    char marker[80];
+    snprintf(marker,sizeof marker,"<sl:policyInt name=\"%s\"",name);
+    const char *item=strstr(xml,marker);
+    if(!item || strstr(item+1,marker))return FALSE;
+    item+=strlen(marker);
+    static const char override[]=" attributes=\"override-only\"";
+    if(!strncmp(item,override,sizeof override-1))item+=sizeof override-1;
+    if(*item++!='>' || *item<'0' || *item>'9')return FALSE;
+    ULONGLONG value=0;
+    do {
+        value=value*10+(*item++-'0');
+        if(value>MAXDWORD)return FALSE;
+    } while(*item>='0' && *item<='9');
+    if(!value || strncmp(item,"</sl:policyInt>",15))return FALSE;
+    *number=(DWORD)value;
+    return TRUE;
+}
+
+static BOOL sl_composition_cached(const BYTE *data,DWORD size,const wchar_t *edition,const wchar_t *composition)
+{
+    DWORD type=0,length=0;const BYTE *value=NULL;
+    size_t bytes=wcslen(composition)*sizeof(wchar_t);
+    return bytes && _wcsicmp(edition,composition) &&
+        sl_policy_get(data,size,L"Kernel-EditionName",&type,&value,&length)==ERROR_SUCCESS && type==REG_SZ &&
+        (length==bytes || (length==bytes+sizeof(wchar_t) && !sl_word16(value+bytes))) &&
+        !_wcsnicmp((const wchar_t *)value,composition,bytes/sizeof(wchar_t));
+}
+
+static BOOL sl_apply_sku_identity(const wchar_t *root,const wchar_t *edition,BYTE **data,DWORD *size)
+{
+    char *xml=sl_stock_ppd(root,edition,FALSE);
+    char marker[168];
+    snprintf(marker,sizeof marker,"<sl:policyStr name=\"Kernel-EditionName\">%ls</sl:policyStr>",edition);
+    DWORD branding=0,product=0;
+    BOOL ok=xml && strstr(xml,marker) && sl_ppd_identity_number(xml,"Kernel-BrandingInfo",&branding) &&
+        sl_ppd_identity_number(xml,"Kernel-ProductInfo",&product);
+    free(xml);
+    if(!ok)return FALSE;
+
+    const BYTE *old_name=NULL,*old_brand=NULL,*old_product=NULL;
+    DWORD type=0,length=0;
+    if(sl_policy_get(*data,*size,L"Kernel-BrandingInfo",&type,&old_brand,&length)!=ERROR_SUCCESS ||
+       type!=REG_DWORD || length!=sizeof(DWORD) ||
+       sl_policy_get(*data,*size,L"Kernel-ProductInfo",&type,&old_product,&length)!=ERROR_SUCCESS ||
+       type!=REG_DWORD || length!=sizeof(DWORD) ||
+       sl_policy_get(*data,*size,L"Kernel-EditionName",&type,&old_name,&length)!=ERROR_SUCCESS || type!=REG_SZ)
+        return FALSE;
+    WORD name_bytes=(WORD)(wcslen(edition)*sizeof(wchar_t));
+    if(length>=sizeof(wchar_t) && !sl_word16(old_name+length-sizeof(wchar_t)))name_bytes+=sizeof(wchar_t);
+    DWORD entry_offset=(DWORD)(old_name-*data)-16-(sizeof L"Kernel-EditionName"-sizeof(wchar_t));
+    WORD old_entry=sl_word16(*data+entry_offset);
+    WORD entry_bytes=(16+sl_word16(*data+entry_offset+2)+name_bytes+3)&~3;
+    DWORD updated_size=*size-old_entry+entry_bytes;
+    if(updated_size>SL_POLICY_MAX)return FALSE;
+
+    memcpy((BYTE *)old_brand,&branding,sizeof branding);
+    memcpy((BYTE *)old_product,&product,sizeof product);
+    if(updated_size>*size) {
+        BYTE *grown=realloc(*data,updated_size);
+        if(!grown)return FALSE;
+        *data=grown;
+    }
+    BYTE *entry=*data+entry_offset;
+    memmove(entry+entry_bytes,entry+old_entry,*size-entry_offset-old_entry);
+    BYTE *value=entry+16+sl_word16(entry+2);
+    memset(value,0,entry_bytes-(value-entry));
+    memcpy(value,edition,name_bytes);
+    memcpy(entry,&entry_bytes,sizeof entry_bytes);
+    memcpy(entry+6,&name_bytes,sizeof name_bytes);
+    *size=updated_size;
+    DWORD payload=*size-24;
+    memcpy(*data,size,4);
+    memcpy(*data+4,&payload,4);
+    return sl_policy_valid(*data,*size);
+}
+
+static DWORD sl_config_hives(SlRegistry *api,const wchar_t *root,const wchar_t *system,const wchar_t *software,
                              const wchar_t *new_system,const wchar_t *new_software,SlBackup *backup,
                              const wchar_t *old_system,const wchar_t *old_software)
 {
     SlKey sys=NULL,soft=NULL,original_sys=NULL,original_soft=NULL;
-    DWORD error=api->OpenHive(system,&sys);
-    if(!error)error=api->OpenHive(software,&soft);
-    wchar_t edition[80],build[40];
+    DWORD error=sl_hive_io_error(L"open",system,api->OpenHive(system,&sys));
+    if(!error)error=sl_hive_io_error(L"open",software,api->OpenHive(software,&soft));
+    wchar_t edition[80],build[40],composition[80]={0};
     if(!error && (!sl_string(api,soft,L"Microsoft\\Windows NT\\CurrentVersion",L"EditionID",edition,80) ||
                   !sl_string(api,soft,L"Microsoft\\Windows NT\\CurrentVersion",L"CurrentBuild",build,40)))error=ERROR_INVALID_DATA;
     BOOL restore=old_system!=NULL;
+    char *defaults=!error && !restore?sl_stock_ppd(root,edition,TRUE):NULL;
+    /* feclient and shell32 distinguish a missing value from an explicit zero. */
+    BOOL dpl_default=defaults && strstr(defaults,
+        "<sl:policyInt name=\"DataProtectionUnderLock-WindowsCore-Enabled\">0</sl:policyInt>");
+    BOOL watermark_default=defaults && strstr(defaults,
+        "<sl:policyInt name=\"shell32-license-ShowProductNameOnDesktop\">0</sl:policyInt>");
+    free(defaults);
+    if(!error && !restore &&
+       !sl_string(api,soft,L"Microsoft\\Windows NT\\CurrentVersion",L"CompositionEditionID",composition,80))
+        composition[0]=0;
     if(!error && restore && (wcscmp(edition,backup->edition) || wcscmp(build,backup->build)))error=ERROR_REVISION_MISMATCH;
-    if(!error && restore)error=api->OpenHive(old_system,&original_sys);
-    if(!error && restore)error=api->OpenHive(old_software,&original_soft);
+    if(!error && restore)error=sl_hive_io_error(L"open",old_system,api->OpenHive(old_system,&original_sys));
+    if(!error && restore)error=sl_hive_io_error(L"open",old_software,api->OpenHive(old_software,&original_soft));
     SlControlMap controls[SL_CONTROL_LIMIT];DWORD control_count=0;
     if(!error && !restore) {
         wcscpy(backup->edition,edition);wcscpy(backup->build,build);
@@ -228,6 +379,18 @@ static DWORD sl_config_hives(SlRegistry *api,const wchar_t *system,const wchar_t
         if(!error && restore)error=sl_set(api,sys,options,L"ProductPolicy",REG_BINARY,data,size);
         if(!error && !restore) {
             if(!sl_policy_profile(data,&size))error=ERROR_INVALID_DATA;
+            if(!error && sl_composition_cached(data,size,edition,composition)) {
+                if(sl_apply_sku_identity(root,edition,&data,&size))
+                    wprintf(L"Using the original %ls SKU identity in place of the %ls composition cache.\n",edition,composition);
+                else {
+                    fwprintf(stderr,L"Could not verify %ls SKU identity in its original PPD license.\n",edition);
+                    error=ERROR_INVALID_DATA;
+                }
+            }
+            if(!error && dpl_default && !sl_policy_add_zero_default(&data,&size,L"DataProtectionUnderLock-WindowsCore-Enabled"))
+                error=ERROR_INVALID_DATA;
+            if(!error && watermark_default && !sl_policy_add_zero_default(&data,&size,L"shell32-license-ShowProductNameOnDesktop"))
+                error=ERROR_INVALID_DATA;
             /* Older kernels consume the policy before the service can start. */
             if(!error)error=sl_set(api,sys,options,L"ProductPolicy",REG_BINARY,data,size);
             if(!policy){policy=data;policy_size=size;data=NULL;}
@@ -275,7 +438,9 @@ static DWORD sl_config_hives(SlRegistry *api,const wchar_t *system,const wchar_t
         if(key)api->CloseKey(key);
     } else if(!error) {
         SlKey key=NULL;PSECURITY_DESCRIPTOR sd=NULL;
-        if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"O:SYG:SYD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)",SDDL_REVISION_1,&sd,NULL))error=GetLastError();
+        if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"O:SYG:SYD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)"
+            L"(A;CI;KR;;;AC)(A;CI;KR;;;S-1-15-2-2)",SDDL_REVISION_1,&sd,NULL))error=GetLastError();
         if(!error)error=api->CreateKey(sys,L"NTTimebombSLShim",NULL,0,sd,&key,NULL);
         if(sd)LocalFree(sd);
         if(!error)error=api->SetValue(key,L"Policy",REG_BINARY,policy,policy_size);
@@ -286,8 +451,8 @@ static DWORD sl_config_hives(SlRegistry *api,const wchar_t *system,const wchar_t
         static const wchar_t group[]=L"NTTimebombSLShim\0";
         if(!error)error=sl_set(api,soft,L"Microsoft\\Windows NT\\CurrentVersion\\Svchost",L"NTTimebombSLShim",REG_MULTI_SZ,group,sizeof group);
     }
-    if(!error)error=api->SaveHive(sys,new_system,6,1);
-    if(!error)error=api->SaveHive(soft,new_software,6,1);
+    if(!error)error=sl_hive_io_error(L"save",new_system,api->SaveHive(sys,new_system,6,1));
+    if(!error)error=sl_hive_io_error(L"save",new_software,api->SaveHive(soft,new_software,6,1));
     free(policy);
     if(original_sys)api->CloseHive(original_sys);
     if(original_soft)api->CloseHive(original_soft);
@@ -312,7 +477,12 @@ static BOOL sl_backup_directory(const wchar_t *root,wchar_t backup[PATH_SIZE],BO
         LocalFree(sd);
         if(!ok)return FALSE;
     }
-    return spp_path_chain(backup,TRUE);
+    if(GetFileAttributesW(backup)==INVALID_FILE_ATTRIBUTES)return FALSE;
+    if(!spp_path_chain(backup,TRUE)){SetLastError(ERROR_INVALID_DATA);return FALSE;}
+    DWORD attrs=GetFileAttributesW(parent);
+    DWORD visibility=FILE_ATTRIBUTE_SYSTEM|FILE_ATTRIBUTE_HIDDEN;
+    return attrs!=INVALID_FILE_ATTRIBUTES && ((attrs&visibility)==visibility ||
+        SetFileAttributesW(parent,(attrs&~FILE_ATTRIBUTE_NORMAL)|visibility));
 }
 static BOOL sl_backup_paths_valid(const SlBackup *backup)
 {
@@ -330,11 +500,35 @@ static BOOL sl_backup_paths_valid(const SlBackup *backup)
         }
         if(!_wcsicmp(entry->relative,L"Windows\\System32\\Config\\SYSTEM")){system=TRUE;allowed=TRUE;}
         if(!_wcsicmp(entry->relative,L"Windows\\System32\\Config\\SOFTWARE")){software=TRUE;allowed=TRUE;}
+        if(!_wcsicmp(entry->relative,L"Windows\\System32\\nttp-slshim-x64.dll") && !entry->existed)allowed=TRUE;
         if(!allowed)return FALSE;
         for(unsigned j=0;j<i;++j)if(!_wcsicmp(entry->relative,backup->files[j].relative))return FALSE;
     }
     return system && software;
 }
+
+/* State 2 is published only after the restore and attribute writes commit.
+   Keep its manifest until all known originals are removed so cleanup can retry. */
+static BOOL sl_cleanup_restored(BCRYPT_ALG_HANDLE algorithm,const wchar_t *directory,
+                                const wchar_t *manifest,const SlBackup *backup)
+{
+    for(unsigned i=0;i<backup->count;++i) {
+        if(!backup->files[i].existed)continue;
+        wchar_t original[PATH_SIZE];char sha[65];
+        if(!sl_original_name(original,directory,i))return FALSE;
+        DWORD attrs=GetFileAttributesW(original);
+        if(attrs==INVALID_FILE_ATTRIBUTES && spp_missing(GetLastError()))continue;
+        if(attrs==INVALID_FILE_ATTRIBUTES || (attrs&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT)) ||
+           !sl_stream_sha(algorithm,original,sha) || strcmp(sha,backup->files[i].original)) {
+            fwprintf(stderr,L"Retained an unexpected file at %ls.\n",original);
+            SetLastError(ERROR_INVALID_DATA);
+            return FALSE;
+        }
+        if(!spp_remove(original))return FALSE;
+    }
+    return spp_remove(manifest);
+}
+
 static BOOL sl_target_file(const wchar_t *root,const wchar_t *relative,wchar_t target[PATH_SIZE])
 {
     wchar_t scope[OFFLINE_NT_PATH],final[OFFLINE_NT_PATH],live[PATH_SIZE];
@@ -456,16 +650,49 @@ static BOOL sl_install(BCRYPT_ALG_HANDLE algorithm,const wchar_t *root,BOOL rest
     SlRegistry api={0};SppPlan plan={.mode=SPP_RESTORE};
     wchar_t directory[PATH_SIZE],manifest[PATH_SIZE],lock_path[PATH_SIZE],stage[PATH_SIZE],stage_name[64];
     wchar_t system[PATH_SIZE],software[PATH_SIZE],new_system[PATH_SIZE],new_software[PATH_SIZE];
-    HANDLE lock=INVALID_HANDLE_VALUE;BOOL owns_stage=FALSE,ok=FALSE,committed=FALSE;DWORD failure=ERROR_SUCCESS;
-    wchar_t removed[2][PATH_SIZE]={{0}},removed_target[2][PATH_SIZE]={{0}};
+    HANDLE lock=INVALID_HANDLE_VALUE;
+    BOOL owns_stage=FALSE,ok=FALSE,committed=FALSE,remove_empty_backup=FALSE;
+    DWORD failure=ERROR_SUCCESS;
+    wchar_t removed[3][PATH_SIZE]={{0}},removed_target[3][PATH_SIZE]={{0}};
     if(!sl_root(root)) {fwprintf(stderr,L"Specify a separate offline Windows root containing SYSTEM and SOFTWARE hives.\n");return FALSE;}
-    if(!sl_backup_directory(root,directory,!restore) || !build_path(manifest,directory,L"state.bin") ||
-       !build_path(lock_path,directory,L"operation.lock"))goto finish;
-    lock=CreateFileW(lock_path,GENERIC_READ|GENERIC_WRITE,0,NULL,OPEN_ALWAYS,FILE_FLAG_BACKUP_SEMANTICS,NULL);
+    if(!sl_backup_directory(root,directory,!restore)) {
+        if(restore && spp_missing(GetLastError())){
+            wprintf(L"No SLShim backup exists in this target.\n");
+            return TRUE;
+        }
+        goto finish;
+    }
+    if(!build_path(manifest,directory,L"state.bin") || !build_path(lock_path,directory,L"operation.lock"))goto finish;
+    lock=CreateFileW(lock_path,GENERIC_READ|GENERIC_WRITE|(restore?DELETE:0),0,NULL,OPEN_ALWAYS,
+                     FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
     if(lock==INVALID_HANDLE_VALUE){fwprintf(stderr,L"Another SLShim operation is active, or the backup is inaccessible.\n");goto finish;}
-    BOOL has_manifest=spp_path_type(manifest,FALSE,FALSE);
+    BY_HANDLE_FILE_INFORMATION lock_info;
+    if(!GetFileInformationByHandle(lock,&lock_info))goto finish;
+    if((lock_info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT) || lock_info.nFileSizeHigh || lock_info.nFileSizeLow) {
+        SetLastError(ERROR_INVALID_DATA);goto finish;
+    }
+    DWORD manifest_attrs=GetFileAttributesW(manifest);
+    BOOL has_manifest=manifest_attrs!=INVALID_FILE_ATTRIBUTES;
+    if(!has_manifest && !spp_missing(GetLastError()))goto finish;
     if(has_manifest) {
+        if(manifest_attrs&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT)) {
+            SetLastError(ERROR_INVALID_DATA);goto finish;
+        }
         if(!sl_manifest_io(manifest,&backup,FALSE) || !sl_backup_paths_valid(&backup))goto finish;
+        if(backup.state==2) {
+            if(!sl_cleanup_restored(algorithm,directory,manifest,&backup))goto finish;
+            if(restore) {
+                wprintf(L"SLShim was already restored. Removed its completed backup.\n");
+                remove_empty_backup=ok=TRUE;
+                goto finish;
+            }
+            memset(&backup,0,sizeof backup);
+            backup.version=SL_BACKUP_VERSION;
+            memcpy(backup.magic,"NTTPSL01",8);
+            has_manifest=FALSE;
+        }
+    }
+    if(has_manifest) {
         for(unsigned i=0;i<backup.count;++i) {
             wchar_t target[PATH_SIZE],original[PATH_SIZE];char sha[65];
             SlBackupFile *entry=&backup.files[i];
@@ -489,9 +716,12 @@ static BOOL sl_install(BCRYPT_ALG_HANDLE algorithm,const wchar_t *root,BOOL rest
             }
             wprintf(L"SLShim is already installed in %ls. No files changed.\n",root);ok=TRUE;goto finish;
         }
-        if(restore && backup.state==2){wprintf(L"SLShim is already restored. Backups remain at %ls.\n",directory);ok=TRUE;goto finish;}
-        if(!restore){fwprintf(stderr,L"A previous SLShim backup already exists. Restore any prepared operation first, then archive that backup directory before reinstalling.\n");goto finish;}
-    } else if(restore) {fwprintf(stderr,L"No SLShim backup exists in this target.\n");goto finish;}
+        if(!restore){fwprintf(stderr,L"A previous SLShim backup already exists. Run /slshim-restore before reinstalling.\n");goto finish;}
+    } else if(restore) {
+        wprintf(L"No SLShim restore manifest exists in this target. Any other backup files are retained.\n");
+        remove_empty_backup=ok=TRUE;
+        goto finish;
+    }
     if(!sl_registry_load(algorithm,&api))goto finish;
     swprintf(stage_name,64,L".nttp-slshim-stage-%lu",GetCurrentProcessId());
     if(!build_path(stage,root,stage_name) || !CreateDirectoryW(stage,NULL))goto finish;
@@ -506,7 +736,7 @@ static BOOL sl_install(BCRYPT_ALG_HANDLE algorithm,const wchar_t *root,BOOL rest
             if(!_wcsicmp(backup.files[i].relative,L"Windows\\System32\\Config\\SOFTWARE"))sl_original_name(original_software,directory,i);
         }
         if(!original_system[0] || !original_software[0] ||
-           sl_config_hives(&api,system,software,new_system,new_software,&backup,original_system,original_software))goto finish;
+           sl_config_hives(&api,root,system,software,new_system,new_software,&backup,original_system,original_software))goto finish;
         for(unsigned i=0;i<backup.count;++i) {
             SlBackupFile *entry=&backup.files[i];wchar_t target[PATH_SIZE],original[PATH_SIZE];
             if(!sl_target_file(root,entry->relative,target))goto finish;
@@ -518,7 +748,7 @@ static BOOL sl_install(BCRYPT_ALG_HANDLE algorithm,const wchar_t *root,BOOL rest
                 if(hive && !sl_metadata_copy(target,source))goto finish;
                 if(!spp_add_file(&plan,source,target,FALSE,FALSE,0))goto finish;
             } else if(spp_path_type(target,FALSE,FALSE)) {
-                unsigned slot=wcsstr(entry->relative,L"SysWOW64")!=NULL;
+                unsigned slot=wcsstr(entry->relative,L"nttp-slshim-x64.dll")?2:(wcsstr(entry->relative,L"SysWOW64")!=NULL);
                 wchar_t name[32];swprintf(name,32,L"removed-%u.dll",slot);
                 if(!build_path(removed[slot],stage,name))goto finish;
                 wcscpy(removed_target[slot],target);
@@ -529,12 +759,12 @@ static BOOL sl_install(BCRYPT_ALG_HANDLE algorithm,const wchar_t *root,BOOL rest
             }
         }
     } else {
-        if(sl_config_hives(&api,system,software,new_system,new_software,&backup,NULL,NULL))goto finish;
+        if(sl_config_hives(&api,root,system,software,new_system,new_software,&backup,NULL,NULL))goto finish;
         WORD native_machine=0;
         for(unsigned arch=0;arch<2;++arch) {
             wchar_t folder[PATH_SIZE],base[PATH_SIZE];
             if(!build_path(base,root,arch?L"Windows\\SysWOW64":L"Windows\\System32"))goto finish;
-            if(arch && native_machine!=IMAGE_FILE_MACHINE_AMD64)break;
+            if(arch && native_machine==IMAGE_FILE_MACHINE_I386)break;
             if(arch && !spp_path_type(base,TRUE,FALSE))continue;
             if(!spp_path_chain(base,TRUE))goto finish;
             unsigned files_added=0;
@@ -556,9 +786,17 @@ static BOOL sl_install(BCRYPT_ALG_HANDLE algorithm,const wchar_t *root,BOOL rest
                 WORD machine=arch?IMAGE_FILE_MACHINE_I386:native_machine;
                 swprintf(relative,96,L"Windows\\%ls\\nttp-slshim.dll",arch?L"SysWOW64":L"System32");
                 if(!sl_target_file(root,relative,target) || GetFileAttributesW(target)!=INVALID_FILE_ATTRIBUTES ||
-                   !sl_payload_file(algorithm,&sl_runtime_payloads[machine==IMAGE_FILE_MACHINE_AMD64],payload) ||
+                   !sl_payload_file(algorithm,&sl_runtime_payloads[machine==IMAGE_FILE_MACHINE_ARM64?2:
+                                      machine==IMAGE_FILE_MACHINE_AMD64],payload) ||
                    !sl_stage_entry(algorithm,root,stage,relative,payload,&backup,&plan,machine))goto finish;
             }
+        }
+        if(native_machine==IMAGE_FILE_MACHINE_ARM64) {
+            static const wchar_t relative[]=L"Windows\\System32\\nttp-slshim-x64.dll";
+            wchar_t target[PATH_SIZE],payload[PATH_SIZE];
+            if(!sl_target_file(root,relative,target) || GetFileAttributesW(target)!=INVALID_FILE_ATTRIBUTES ||
+               !sl_payload_file(algorithm,&sl_woa_emulated,payload) ||
+               !sl_stage_entry(algorithm,root,stage,relative,payload,&backup,&plan,IMAGE_FILE_MACHINE_AMD64))goto finish;
         }
         if(!sl_stage_entry(algorithm,root,stage,L"Windows\\System32\\Config\\SYSTEM",new_system,&backup,&plan,0) ||
            !sl_stage_entry(algorithm,root,stage,L"Windows\\System32\\Config\\SOFTWARE",new_software,&backup,&plan,0))goto finish;
@@ -581,17 +819,19 @@ static BOOL sl_install(BCRYPT_ALG_HANDLE algorithm,const wchar_t *root,BOOL rest
     }
     backup.state=restore?2:1;
     if(!sl_manifest_io(manifest,&backup,TRUE))goto finish;
+    if(restore && !sl_cleanup_restored(algorithm,directory,manifest,&backup))goto finish;
+    remove_empty_backup=restore;
     ok=TRUE;
     wprintf(restore?L"SLShim removed. Original DLLs, service settings and kernel policy restored; unrelated registry settings retained.\n":
                     L"SLShim installed for %ls (build %ls). Original licensing services disabled; the dedicated shim service starts in the target after reboot.\n",backup.edition,backup.build);
-    wprintf(L"Backups retained at %ls. /cishim remains a separate operation.\n",directory);
+    if(!restore)wprintf(L"Backups retained at %ls. /cishim remains a separate operation.\n",directory);
 finish:
     if(!ok) {
         failure=GetLastError();if(!failure)failure=ERROR_INVALID_DATA;
         fwprintf(stderr,L"SLShim %ls failed (Win32 %lu). %ls\n",restore?L"restore":L"installation",failure,
                  committed?L"Files were committed; use /slshim-restore with the retained backup.":L"No successful deployment was committed. Preserve any reported backups.");
     }
-    for(unsigned i=0;i<2;++i)if(removed[i][0]) {
+    for(unsigned i=0;i<ARRAYSIZE(removed);++i)if(removed[i][0]) {
         if(!ok && !committed)spp_restore(removed[i],removed_target[i]);
         else if(!spp_remove(removed[i]))fwprintf(stderr,L"Inert runtime file remains at %ls.\n",removed[i]);
     }
@@ -605,7 +845,18 @@ finish:
         if(build_path(file,stage,L"SOFTWARE"))spp_remove(file);
         if(!RemoveDirectoryW(stage))fwprintf(stderr,L"Inspect remaining SLShim staging files at %ls.\n",stage);
     }
-    if(lock!=INVALID_HANDLE_VALUE)CloseHandle(lock);
+    if(lock!=INVALID_HANDLE_VALUE) {
+        if(remove_empty_backup) {
+            FILE_DISPOSITION_INFO disposition={.DeleteFile=TRUE};
+            if(!SetFileInformationByHandle(lock,FileDispositionInfo,&disposition,sizeof disposition))
+                fwprintf(stderr,L"Could not remove the completed lock at %ls.\n",lock_path);
+        }
+        CloseHandle(lock);
+    }
+    if(remove_empty_backup && RemoveDirectoryW(directory)) {
+        wchar_t parent[PATH_SIZE];
+        if(build_path(parent,root,L"NTTimebombBackup"))RemoveDirectoryW(parent);
+    }
     if(api.module)FreeLibrary(api.module);
     free(plan.files);free(plan.directories);
     if(!ok)SetLastError(failure);

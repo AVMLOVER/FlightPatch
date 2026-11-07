@@ -15,14 +15,16 @@ def include(path):
     if not path.is_file():raise SystemExit('Missing package file: '+str(path))
     files[path.relative_to(root).as_posix()]=path.read_bytes()
 
-for name in ['nttimebomb-x86.exe','nttimebomb-x64.exe','nttimebomb.cmd','flightpatch.cmd',
+for name in ['nttimebomb-x86.exe','nttimebomb-x64.exe','nttimebomb-arm64.exe',
+             'nttimebomb-mmc-x86.exe','nttimebomb-mmc-x64.exe','nttimebomb-mmc-arm64.exe',
+             'nttimebomb.cmd','flightpatch.cmd',
              'README.md','TESTING.md','LICENSE']:
     include(root/name)
 for folder in ['src','tools']:
     for path in sorted((root/folder).rglob('*')):
         if path.is_file() and path.suffix.lower() in ['.c','.h','.rc','.manifest','.def','.json','.py']:
             include(path)
-for name in ['README.md','Microsoft-OFFREG-NOTICE.txt','offreg-x86.dll','offreg-x64.dll']:
+for name in ['README.md','Microsoft-OFFREG-NOTICE.txt','offreg-x86.dll','offreg-x64.dll','offreg-arm64.dll']:
     include(root/'dependencies'/name)
 profiles=json.loads((root/'src/slshim_abi.json').read_text())['profiles']
 for arch in ['x86','x64']:
@@ -30,10 +32,15 @@ for arch in ['x86','x64']:
     for profile,modules in profiles.items():
         for module in modules:
             include(root/'slshim'/arch/profile/(module+'.dll'))
+for module in profiles['29698']:
+    include(root/'slshim/arm64/29698'/(module+'.dll'))
+for name in ['nttp-slshim.dll','nttp-slshim-x64.dll']:
+    include(root/'slshim/arm64'/name)
 
 fingerprints=re.findall(r'L"((?:slshim|dependencies)/[^\"]+)", "([0-9a-f]{64})"',
                        (root/'src/slshim_payloads.h').read_text())
-if len(fingerprints)!=4+2*sum(len(modules) for modules in profiles.values()):raise SystemExit('Unexpected payload fingerprint count')
+expected={name for name in files if name.startswith(('slshim/','dependencies/')) and name.endswith('.dll')}
+if {name for name,_ in fingerprints}!=expected:raise SystemExit('Payload/header path mismatch')
 for name,expected in fingerprints:
     if hashlib.sha256(files[name]).hexdigest()!=expected:
         raise SystemExit('Payload/header mismatch; rebuild payloads and both executables: '+name)
