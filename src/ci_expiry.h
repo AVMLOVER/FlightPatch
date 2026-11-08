@@ -225,6 +225,61 @@ static BOOL plan_ci_expiry(const Image *im, Plan *plan)
            record(im, plan, function, jump, sizeof jump, L"CI build-expiry callback");
 }
 
+typedef struct {
+    DWORD branch, end, lookup;
+} CiBootOptionLoop;
+
+static BOOL ci_boot_option_loop(const Image *im, DWORD start, DWORD option, unsigned reg,
+                                BOOL allow_patched, CiBootOptionLoop *loop)
+{
+    /* RAX receives the lookup result, EDX holds the option, and RSP is the stack. */
+    if (reg == 0 || reg == 2 || reg == 4 || !code_span(im, start, 24)) return FALSE;
+    const BYTE *p = im->bytes + start;
+    BOOL copy = (p[5] == (0x48 | (reg >> 3)) && p[6] == 0x8b && p[7] == (0xc8 | (reg & 7))) ||
+                (p[5] == (0x48 | ((reg >> 3) << 2)) && p[6] == 0x89 && p[7] == (0xc1 | ((reg & 7) << 3)));
+    if (p[0] != 0xba || u32(p + 1) != option || !copy ||
+        !at(im, start + 8, "\xe8\0\0\0\0\x48\x85\xc0", "x????xxx") ||
+        (p[16] != 0x74 && !(allow_patched && p[16] == 0xeb)) ||
+        !at(im, start + 18, "\xc6\x40\x14\x01", "xxxx")) return FALSE;
+    DWORD length = p[22] == 0xeb ? 24 : 27;
+    if (length == 27 && (p[22] != 0xe9 || !code_span(im, start, length))) return FALSE;
+    int32_t back = length == 24 ? (int8_t)p[23] : (int32_t)u32(p + 23);
+    DWORD lookup = rel_target(im, start + 13, (int32_t)u32(p + 9));
+    if (18 + (int8_t)p[17] != (int)length || (int64_t)length + back != 0 || lookup == NONE) return FALSE;
+    *loop = (CiBootOptionLoop){start + 16, start + length, lookup};
+    return TRUE;
+}
+
+/* Resolve the two loops by their option IDs, shared list, and call and branch
+   targets. Preserve the first option by taking its existing exit branch. */
+static DWORD ci_boot_invalidation_loop(const Image *im, DWORD offset)
+{
+    if (!code_span(im, offset, 11)) return NONE;
+    const BYTE *p = im->bytes + offset;
+    if ((p[0] & 0xfb) != 0x48 || p[1] != 0x8b || (p[2] & 0xc7) != 5) return NONE;
+    unsigned reg = ((p[2] >> 3) & 7) | ((p[0] & 4) << 1);
+    BOOL initialize = at(im, offset + 7, "\x48\x89\x5d\0", "xxx?");
+    CiBootOptionLoop first, second;
+    if (!ci_boot_option_loop(im, offset + (initialize ? 11 : 7), 0x16000048, reg, TRUE, &first) ||
+        !code_span(im, first.end, 7)) return NONE;
+    const BYTE *next = im->bytes + first.end;
+    if ((next[0] & 0xfb) != 0x48 || next[1] != 0x8b || (next[2] & 0xc7) != 5)
+        return NONE;
+    unsigned next_reg = ((next[2] >> 3) & 7) | ((next[0] & 4) << 1);
+    if (!ci_boot_option_loop(im, first.end + 7, 0x260000e1, next_reg, FALSE, &second) ||
+        first.lookup != second.lookup || !code_span(im, second.end, 23) ||
+        !at(im, second.end, "\x48\x8b\x0d\0\0\0\0\x4c\x8d\x45\0\xbf\x30\x00\x00\x12\x8b\xd7\xe8", "xxx????xxx?xxxxxxxx") ||
+        (initialize && p[10] != im->bytes[second.end + 10])) return NONE;
+    int64_t slot = (int64_t)offset + 7 + (int32_t)u32(p + 3);
+    if (slot != (int64_t)first.end + 7 + (int32_t)u32(next + 3) ||
+        slot != (int64_t)second.end + 7 + (int32_t)u32(im->bytes + second.end + 3)) return NONE;
+    DWORD read = rel_target(im, second.end + 23, (int32_t)u32(im->bytes + second.end + 19));
+    DWORD function_start, function_end;
+    return read != NONE && read != first.lookup &&
+           ci_function_range(im, offset, &function_start, &function_end) && second.end + 23 <= function_end
+           ? first.branch : NONE;
+}
+
 static BOOL plan_ci_boot(const Image *im, Plan *plan)
 {
     if (!im->x64 || u16(im->bytes + im->pe + 24 + 0x44) != IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION)
@@ -235,6 +290,7 @@ static BOOL plan_ci_boot(const Image *im, Plan *plan)
        Leave the removal of DisableElamDrivers and the load-options sanitizer intact. */
     const BYTE *bytes = im->bytes;
     DWORD found = NONE;
+    BOOL loop = FALSE;
     if (im->machine == IMAGE_FILE_MACHINE_ARM64) {
         const DWORD expected[] = {0x16000048, 0x260000e1, 0x12000030};
         const unsigned literal[] = {4, 20, 44};
@@ -265,6 +321,12 @@ static BOOL plan_ci_boot(const Image *im, Plan *plan)
                                       L"keep the ARM64 loader's BCD nointegritychecks option");
     }
     for (DWORD offset = 0; offset + 61 <= im->size; ++offset) {
+        DWORD branch = (bytes[offset] & 0xfb) == 0x48 ? ci_boot_invalidation_loop(im, offset) : NONE;
+        if (branch != NONE) {
+            if (found != NONE) return FALSE;
+            found = branch;
+            loop = TRUE;
+        }
         /* Later loaders obtain the application entry from the same getter before each option. */
         if (at(im, offset, "\xe8\0\0\0\0\xba\x48\x00\x00\x16\x48\x8b\x48\x18", "x????xxxxxxxxx") &&
             at(im, offset + 19, "\xe8\0\0\0\0\xba\xe1\x00\x00\x26\x48\x8b\x48\x18\xe8", "x????xxxxxxxxxx") &&
@@ -304,8 +366,8 @@ static BOOL plan_ci_boot(const Image *im, Plan *plan)
             return FALSE;
         found = offset + 16;
     }
-    return found != NONE && record(im, plan, found, "\x90\x90\x90\x90\x90", 5,
-                                   L"keep the loader's BCD nointegritychecks option");
+    return found != NONE && record(im, plan, found, loop ? "\xeb" : "\x90\x90\x90\x90\x90",
+                                   loop ? 1 : 5, L"keep the loader's BCD nointegritychecks option");
 }
 
 static BOOL ci_io_error(const wchar_t *action, const wchar_t *path, DWORD error)

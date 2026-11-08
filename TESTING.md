@@ -114,6 +114,11 @@ Enterprise edition IDs, using their original PPD files. Targeted restore
 recovered the original policy byte for byte and preserved an unrelated registry
 marker. Guest confirmation of the corrected SKU and watermark remains pending.
 
+An offline hive test used a ProfessionalWorkstation EditionID with an Enterprise
+composition cache in the original policy. Restore recovered SKU 0xA1 from the
+matching PPD and retained an unrelated registry marker added after installation.
+The restore change still needs a booted 21390 test.
+
 The original 17746 Professional and 29698 ProfessionalWorkstation preview DLLs
 and SYSTEM/SOFTWARE hives were used through private fixtures. Original samples
 were retained. No upstream installer was executed, and the host's licensing DLLs,

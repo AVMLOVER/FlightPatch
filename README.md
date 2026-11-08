@@ -276,8 +276,12 @@ Restore puts back the original DLLs and removes the added runtime DLLs. It
 restores the saved licensing service start settings and ProductPolicy, and removes
 the shim service, cache, and svchost group. It edits the current offline hives
 instead of copying an old complete hive over them, preserving unrelated registry
-changes made since installation. The initial ProductPolicy snapshot itself is
-restored. Unknown changed licensing DLLs or a changed OS edition/build stop
+changes made since installation. Restore uses the saved ProductPolicy. If its
+cached SKU matches the composition edition and differs from the installed
+EditionID, restore corrects the SKU identity fields using the installed
+edition's matching PPD license. If those values cannot be verified, restore
+keeps the saved policy and reports the fallback.
+Unknown changed licensing DLLs or a changed OS edition/build stop
 restore to avoid downgrading a serviced installation. Backups remain after a
 successful restore. Archive the restored `SLShim` backup directory before a
 fresh installation; the tool deliberately does not replace its original backup.

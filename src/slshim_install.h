@@ -189,7 +189,7 @@ static DWORD sl_hive_io_error(const wchar_t *operation,const wchar_t *path,DWORD
     return error;
 }
 
-static BOOL sl_policy_add_zero_default(BYTE **data,DWORD *size,const wchar_t *name)
+static BOOL sl_policy_add_dword_default(BYTE **data,DWORD *size,const wchar_t *name,DWORD fallback)
 {
     DWORD type=0,length=0;const BYTE *value=NULL;
     DWORD error=sl_policy_get(*data,*size,name,&type,&value,&length);
@@ -207,6 +207,7 @@ static BOOL sl_policy_add_zero_default(BYTE **data,DWORD *size,const wchar_t *na
     const WORD header[]={entry_bytes,name_bytes,REG_DWORD,sizeof(DWORD)};
     memcpy(entry,header,sizeof header);
     memcpy(entry+16,name,name_bytes);
+    memcpy(entry+16+name_bytes,&fallback,sizeof fallback);
     *size+=entry_bytes;
     DWORD payload=*size-24;
     memcpy(grown,size,4);
@@ -235,7 +236,7 @@ static char *sl_stock_ppd(const wchar_t *root,const wchar_t *edition,BOOL defaul
     return NULL;
 }
 
-static BOOL sl_ppd_identity_number(const char *xml,const char *name,DWORD *number)
+static BOOL sl_ppd_number(const char *xml,const char *name,DWORD *number)
 {
     char marker[80];
     snprintf(marker,sizeof marker,"<sl:policyInt name=\"%s\"",name);
@@ -250,7 +251,7 @@ static BOOL sl_ppd_identity_number(const char *xml,const char *name,DWORD *numbe
         value=value*10+(*item++-'0');
         if(value>MAXDWORD)return FALSE;
     } while(*item>='0' && *item<='9');
-    if(!value || strncmp(item,"</sl:policyInt>",15))return FALSE;
+    if(strncmp(item,"</sl:policyInt>",15))return FALSE;
     *number=(DWORD)value;
     return TRUE;
 }
@@ -271,8 +272,8 @@ static BOOL sl_apply_sku_identity(const wchar_t *root,const wchar_t *edition,BYT
     char marker[168];
     snprintf(marker,sizeof marker,"<sl:policyStr name=\"Kernel-EditionName\">%ls</sl:policyStr>",edition);
     DWORD branding=0,product=0;
-    BOOL ok=xml && strstr(xml,marker) && sl_ppd_identity_number(xml,"Kernel-BrandingInfo",&branding) &&
-        sl_ppd_identity_number(xml,"Kernel-ProductInfo",&product);
+    BOOL ok=xml && strstr(xml,marker) && sl_ppd_number(xml,"Kernel-BrandingInfo",&branding) &&
+        sl_ppd_number(xml,"Kernel-ProductInfo",&product) && branding && product;
     free(xml);
     if(!ok)return FALSE;
 
@@ -292,13 +293,14 @@ static BOOL sl_apply_sku_identity(const wchar_t *root,const wchar_t *edition,BYT
     DWORD updated_size=*size-old_entry+entry_bytes;
     if(updated_size>SL_POLICY_MAX)return FALSE;
 
-    memcpy((BYTE *)old_brand,&branding,sizeof branding);
-    memcpy((BYTE *)old_product,&product,sizeof product);
+    size_t brand_offset=old_brand-*data,product_offset=old_product-*data;
     if(updated_size>*size) {
         BYTE *grown=realloc(*data,updated_size);
         if(!grown)return FALSE;
         *data=grown;
     }
+    memcpy(*data+brand_offset,&branding,sizeof branding);
+    memcpy(*data+product_offset,&product,sizeof product);
     BYTE *entry=*data+entry_offset;
     memmove(entry+entry_bytes,entry+old_entry,*size-entry_offset-old_entry);
     BYTE *value=entry+16+sl_word16(entry+2);
@@ -330,8 +332,11 @@ static DWORD sl_config_hives(SlRegistry *api,const wchar_t *root,const wchar_t *
         "<sl:policyInt name=\"DataProtectionUnderLock-WindowsCore-Enabled\">0</sl:policyInt>");
     BOOL watermark_default=defaults && strstr(defaults,
         "<sl:policyInt name=\"shell32-license-ShowProductNameOnDesktop\">0</sl:policyInt>");
+    /* The 21390 Cortana SKU check raises a COM exception when this policy is absent. */
+    DWORD cortana=0;
+    BOOL cortana_default=defaults && sl_ppd_number(defaults,"Cortana-AllowCortana-Enabled",&cortana) && cortana<=1;
     free(defaults);
-    if(!error && !restore &&
+    if(!error &&
        !sl_string(api,soft,L"Microsoft\\Windows NT\\CurrentVersion",L"CompositionEditionID",composition,80))
         composition[0]=0;
     if(!error && restore && (wcscmp(edition,backup->edition) || wcscmp(build,backup->build)))error=ERROR_REVISION_MISMATCH;
@@ -376,20 +381,28 @@ static DWORD sl_config_hives(SlRegistry *api,const wchar_t *root,const wchar_t *
         if(!data){error=ERROR_INVALID_DATA;break;}
         if(!error)error=api->GetValue(source_sys,source_options,L"ProductPolicy",&type,data,&size);
         if(!error && (type!=REG_BINARY || !sl_policy_valid(data,size)))error=ERROR_INVALID_DATA;
+        if(!error && !restore && !sl_policy_profile(data,&size))error=ERROR_INVALID_DATA;
+        if(!error && sl_composition_cached(data,size,edition,composition)) {
+            DWORD saved_size=size;
+            if(sl_apply_sku_identity(root,edition,&data,&size))
+                wprintf(L"Using the original %ls SKU identity in place of the %ls composition cache.\n",edition,composition);
+            else if(restore) {
+                fwprintf(stderr,L"Could not verify the %ls SKU identity. Restoring the saved ProductPolicy.\n",edition);
+                size=saved_size;
+                error=api->GetValue(source_sys,source_options,L"ProductPolicy",&type,data,&size);
+                if(!error && (type!=REG_BINARY || !sl_policy_valid(data,size)))error=ERROR_INVALID_DATA;
+            } else {
+                fwprintf(stderr,L"Could not verify %ls SKU identity in its original PPD license.\n",edition);
+                error=ERROR_INVALID_DATA;
+            }
+        }
         if(!error && restore)error=sl_set(api,sys,options,L"ProductPolicy",REG_BINARY,data,size);
         if(!error && !restore) {
-            if(!sl_policy_profile(data,&size))error=ERROR_INVALID_DATA;
-            if(!error && sl_composition_cached(data,size,edition,composition)) {
-                if(sl_apply_sku_identity(root,edition,&data,&size))
-                    wprintf(L"Using the original %ls SKU identity in place of the %ls composition cache.\n",edition,composition);
-                else {
-                    fwprintf(stderr,L"Could not verify %ls SKU identity in its original PPD license.\n",edition);
-                    error=ERROR_INVALID_DATA;
-                }
-            }
-            if(!error && dpl_default && !sl_policy_add_zero_default(&data,&size,L"DataProtectionUnderLock-WindowsCore-Enabled"))
+            if(!error && dpl_default && !sl_policy_add_dword_default(&data,&size,L"DataProtectionUnderLock-WindowsCore-Enabled",0))
                 error=ERROR_INVALID_DATA;
-            if(!error && watermark_default && !sl_policy_add_zero_default(&data,&size,L"shell32-license-ShowProductNameOnDesktop"))
+            if(!error && watermark_default && !sl_policy_add_dword_default(&data,&size,L"shell32-license-ShowProductNameOnDesktop",0))
+                error=ERROR_INVALID_DATA;
+            if(!error && cortana_default && !sl_policy_add_dword_default(&data,&size,L"Cortana-AllowCortana-Enabled",cortana))
                 error=ERROR_INVALID_DATA;
             /* Older kernels consume the policy before the service can start. */
             if(!error)error=sl_set(api,sys,options,L"ProductPolicy",REG_BINARY,data,size);
