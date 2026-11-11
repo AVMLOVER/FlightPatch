@@ -1,8 +1,9 @@
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <aclapi.h>
 #include <bcrypt.h>
 #include <sddl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,9 @@
 #include <mscat.h>
 #include <ncrypt.h>
 #include <softpub.h>
+#include "version.h"
+#define NTTP_NO_ATTACH 1
+#include "signer.h"
 
 #define MMC_RECEIPT L"SOFTWARE\\NTTimebombPatch\\MMC"
 #define MMC_EMBEDDED_RECEIPT L"SOFTWARE\\NTTimebombPatch\\MMCEmbedded"
@@ -194,69 +198,6 @@ static BOOL mmc_selected(wchar_t *path, HANDLE file, DWORD flags, const MmcCerti
     return valid;
 }
 
-static BOOL mmc_sign(const wchar_t *path, MmcCertificate *certificate)
-{
-    NCRYPT_PROV_HANDLE provider = 0;
-    NCRYPT_KEY_HANDLE key = 0;
-    PCCERT_CONTEXT cert = NULL;
-    HCRYPTMSG signed_msg = NULL;
-    BYTE content_der[4096], signature[8192], name[128], usage[64];
-    GUID subject_type;
-    DWORD content_size = sizeof content_der, signed_size = sizeof signature;
-    DWORD name_size = sizeof name, usage_size = sizeof usage;
-    DWORD encoding = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, bits = 2048;
-    BOOL ok = FALSE;
-    if (NCryptOpenStorageProvider(&provider, MS_KEY_STORAGE_PROVIDER, 0) ||
-        NCryptCreatePersistedKey(provider, &key, NCRYPT_RSA_ALGORITHM, NULL, 0, 0) ||
-        NCryptSetProperty(key, NCRYPT_LENGTH_PROPERTY, (BYTE *)&bits, sizeof bits, 0) ||
-        NCryptFinalizeKey(key, 0)) goto done;
-    LPSTR oid = szOID_PKIX_KP_CODE_SIGNING;
-    CERT_ENHKEY_USAGE eku = {1, &oid};
-    if (!CertStrToNameW(X509_ASN_ENCODING, L"CN=NT Timebomb Patch local MMC", CERT_X500_NAME_STR,
-                        NULL, name, &name_size, NULL) ||
-        !CryptEncodeObjectEx(X509_ASN_ENCODING, X509_ENHANCED_KEY_USAGE, &eku, 0, NULL, usage, &usage_size))
-        goto done;
-    CERT_NAME_BLOB subject = {name_size, name};
-    CERT_EXTENSION extension = {.pszObjId = szOID_ENHANCED_KEY_USAGE, .Value = {usage_size, usage}};
-    CERT_EXTENSIONS extensions = {1, &extension};
-    CRYPT_ALGORITHM_IDENTIFIER algorithm = {.pszObjId = szOID_RSA_SHA256RSA};
-    cert = CertCreateSelfSignCertificate(key, &subject, CERT_CREATE_SELFSIGN_NO_KEY_INFO,
-                                         NULL, &algorithm, NULL, NULL, &extensions);
-    if (!cert || cert->cbCertEncoded > sizeof certificate->der ||
-        !CryptSIPRetrieveSubjectGuid(path, NULL, &subject_type)) goto done;
-    SIP_SUBJECTINFO sip = {.cbSize=sizeof sip, .pgSubjectType=&subject_type, .hFile=INVALID_HANDLE_VALUE,
-        .pwsFileName=path, .DigestAlgorithm={.pszObjId=szOID_NIST_sha256}, .dwEncodingType=encoding, .dwFlags=0x10};
-    union { SIP_INDIRECT_DATA entry; BYTE storage[4096]; } indirect;
-    DWORD indirect_size=sizeof indirect;
-    if (!CryptSIPCreateIndirectData(&sip,&indirect_size,&indirect.entry)) goto done;
-    SPC_INDIRECT_DATA_CONTENT content={indirect.entry.Data,indirect.entry.DigestAlgorithm,indirect.entry.Digest};
-    if (!CryptEncodeObjectEx(encoding, SPC_INDIRECT_DATA_OBJID, &content, 0, NULL,
-                             content_der, &content_size)) goto done;
-    CMSG_SIGNER_ENCODE_INFO signer = {
-        .cbSize = sizeof signer, .pCertInfo = cert->pCertInfo, .hNCryptKey = key, .dwKeySpec = CERT_NCRYPT_KEY_SPEC,
-        .HashAlgorithm = {.pszObjId = szOID_NIST_sha256}
-    };
-    CERT_BLOB encoded = {cert->cbCertEncoded, cert->pbCertEncoded};
-    CMSG_SIGNED_ENCODE_INFO cms = {
-        .cbSize = sizeof cms, .cSigners = 1, .rgSigners = &signer, .cCertEncoded = 1, .rgCertEncoded = &encoded
-    };
-    signed_msg = CryptMsgOpenToEncode(encoding, 0, CMSG_SIGNED, &cms, SPC_INDIRECT_DATA_OBJID, NULL);
-    if (!signed_msg || !CryptMsgUpdate(signed_msg, content_der, content_size, TRUE) ||
-        !CryptMsgGetParam(signed_msg, CMSG_CONTENT_PARAM, 0, signature, &signed_size)) goto done;
-    DWORD index = 0;
-    ok = CryptSIPPutSignedDataMsg(&sip, encoding, &index, signed_size, signature);
-    if (ok) {
-        certificate->size = cert->cbCertEncoded;
-        memcpy(certificate->der, cert->pbCertEncoded, certificate->size);
-    }
-done:
-    if (signed_msg) CryptMsgClose(signed_msg);
-    if (cert) CertFreeCertificateContext(cert);
-    if (key && NCryptFreeObject(key)) ok = FALSE;
-    if (provider) NCryptFreeObject(provider);
-    return ok;
-}
-
 static BOOL mmc_remove_cert(HCERTSTORE store, const MmcCertificate *certificate)
 {
     PCCERT_CONTEXT cert = CertCreateCertificateContext(X509_ASN_ENCODING, certificate->der, certificate->size);
@@ -430,7 +371,20 @@ static BOOL mmc_stage(HANDLE original, const wchar_t *path, MmcInstall *record)
         WriteFile(output, overlay, sizeof overlay-1, &written, NULL) && written == sizeof overlay-1;
     free(data);
     if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
-    if (!ok || !mmc_sign(path, &record->certificate)) return FALSE;
+    if (!ok) return FALSE;
+    {
+        /* Shared signer: one local certificate for the embedded signature. */
+        NttpSigner signer;
+        SipApi sip = {0};
+        BOOL signed_ok = signer_open(&signer, L"CN=NT Timebomb Patch local MMC") &&
+                         signer_sign(&signer, &sip, path);
+        if (signed_ok) {
+            record->certificate.size = signer.certificate.size;
+            memcpy(record->certificate.der, signer.certificate.der, signer.certificate.size);
+        }
+        signer_close(&signer);
+        if (!signed_ok) return FALSE;
+    }
     output = mmc_open(path, GENERIC_READ | GENERIC_WRITE | WRITE_OWNER | WRITE_DAC, 0, OPEN_EXISTING);
     ok = output != INVALID_HANDLE_VALUE && mmc_file_hash(output, record->signed_hash) &&
         FlushFileBuffers(output) && mmc_copy_metadata(original, output);
@@ -649,6 +603,10 @@ static BOOL mmc_run(BOOL restore, HCERTSTORE roots)
 
 int wmain(int argc, wchar_t **argv)
 {
+    if (argc == 2 && (!_wcsicmp(argv[1], L"--version") || !_wcsicmp(argv[1], L"/version"))) {
+        wprintf(L"NT Timebomb Patch " NTTP_VERSION_TEXT L" (MMC helper)\n");
+        return 0;
+    }
     if (argc != 2 || (_wcsicmp(argv[1], L"/mmc") && _wcsicmp(argv[1], L"/mmc-restore"))) {
         fwprintf(stderr, L"Usage: nttimebomb /mmc or nttimebomb /mmc-restore from the running test Windows.\n");
         return 2;
@@ -693,3 +651,4 @@ int wmain(int argc, wchar_t **argv)
     CloseHandle(mutex);
     return ok ? 0 : 1;
 }
+

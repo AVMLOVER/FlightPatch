@@ -1,11 +1,18 @@
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <aclapi.h>
 #include <bcrypt.h>
+#include <sddl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <wincrypt.h>
+#include <mscat.h>
+#include <ncrypt.h>
+#include <softpub.h>
+#include "version.h"
 
 enum { PATH_SIZE = MAX_PATH, MAX_IMAGE = 32 * 1024 * 1024 };
 
@@ -389,6 +396,8 @@ static BOOL write_output(const wchar_t *output, const Output images[FILE_COUNT],
 #include "image.h"
 #include "spp.h"
 #include "nt6.h"
+#include "patch_files.h"
+#include "restore.h"
 
 static BOOL same_directory(const wchar_t *first, const wchar_t *second, BOOL *same)
 {
@@ -443,7 +452,14 @@ static unsigned image_build(const wchar_t *root, BOOL boot_wim)
 }
 
 #include "ci_expiry.h"
+#include "cert_patch.h"
+#include "winload_modify.h"
+#include "signer.h"
 #include "slshim_install.h"
+#include "wintrust_sign.h"
+#include "wintrust_status.h"
+#include "uiaccess.h"
+#include "uac.h"
 #include "mmc_approval.h"
 
 static void suggest_ci(void)
@@ -492,10 +508,27 @@ typedef struct {
     BOOL patch_boot, boot_wim, sku_spp;
 } ImageOptions;
 
+/* From this build on the FlightSigned token replacement no longer applies: those
+   images need the CI and licensing work instead, and nothing is modified here. */
+enum { LEGACY_BUILD_LIMIT = 15063 };
+
+static void suggest_newer_modes(unsigned build)
+{
+    fwprintf(stderr,
+             L"Build %u is 15063 or newer, so this mode does not apply and no file was\n"
+             L"changed. Use nttimebomb /cishim OFFLINE_ROOT for the CI build-expiry\n"
+             L"restrictions and nttimebomb /slshim OFFLINE_WINDOWS_ROOT for the licensing\n"
+             L"side; both can be applied to the same image.\n", build);
+}
+
 static BOOL service_nt6(const wchar_t *source, const wchar_t *root)
 {
     unsigned build = image_build(root, FALSE);
-    return build >= 15058 ? rename_licensing_ui(root, build) : replace_nt6_tokens(source, root);
+    if (build && build >= LEGACY_BUILD_LIMIT) {
+        suggest_newer_modes(build);
+        return FALSE;
+    }
+    return replace_nt6_tokens(source, root);
 }
 
 static BOOL service_image(const wchar_t *root, void *context)
@@ -506,10 +539,12 @@ static BOOL service_image(const wchar_t *root, void *context)
         fwprintf(stderr, L"Cannot determine the Windows build in %ls.\n", root);
         return FALSE;
     }
-    if (build >= 15058)
-        return rename_licensing_ui(root, build);
+    if (build >= LEGACY_BUILD_LIMIT) {
+        suggest_newer_modes(build);
+        return FALSE;
+    }
     if (!options->patch_boot && !options->source) {
-        fwprintf(stderr, L"For builds below 15058, /spponly requires /spp or /spp-reference.\n");
+        fwprintf(stderr, L"/spponly requires /spp or /spp-reference.\n");
         return FALSE;
     }
     if (options->source && !replace_image_spp(options->source, root, TRUE, options->spp_mode, options->sku_spp))
@@ -522,10 +557,12 @@ static BOOL service_image(const wchar_t *root, void *context)
             fwprintf(stderr, L"Offline boot updates completed before SPP failed. The SPP operation can be retried separately.\n");
         return FALSE;
     }
+
     return TRUE;
 }
 
 #include "media.h"
+#include "bcd.h"
 
 static int run_mmc(int argc, wchar_t **argv)
 {
@@ -557,7 +594,7 @@ static int run_mmc(int argc, wchar_t **argv)
 
 static int help(void)
 {
-    wprintf(L"NT Timebomb Patch 5.2.1\n\n"
+    wprintf(L"NT Timebomb Patch " NTTP_VERSION_TEXT L"\n\n"
             L"Use an elevated command prompt for offline servicing. In WinPE use SYSTEM.\n"
             L"All paths must be local drive paths under MAX_PATH. Quote paths containing spaces.\n\n"
             L"EXPERIMENTAL COMPLETE WINDOWS LICENSING SHIM\n"
@@ -575,33 +612,58 @@ static int help(void)
             L"This mode is never implied by /image, /spp, /nt6, /media or /cishim. It does not\n"
             L"change CI, boot files, kernels or LicensingUI. Apply /cishim separately if needed.\n\n"
             L"EXPERIMENTAL MMC CERTIFICATE EXPIRY EXCEPTION\n"
-            L"  nttimebomb /mmc\n"
+            L"  nttimebomb /mmc                  (deprecated, see CHANGELOG.md)\n"
             L"  nttimebomb /mmc-restore\n"
             L"Run as administrator inside the installed test Windows after OOBE. Requires a\n"
             L"matching original Microsoft catalog signature whose only trust error is expiry.\n"
             L"Adds a local embedded signature to native mmc.exe and keeps the original file.\n"
             L"Test the original MMC entry point and UAC prompt. /mmc-restore restores the\n"
             L"original executable and removes the local certificate.\n"
-            L"  nttimebomb /mmc-approval OFFLINE_WINDOWS_ROOT\n"
-            L"  nttimebomb /mmc-approval-restore OFFLINE_WINDOWS_ROOT\n"
-            L"Offline AppInfo automatic-approval table repair. Unknown layouts are rejected.\n\n"
+            L"  nttimebomb /mmc-approval [...]   (deprecated, see CHANGELOG.md)\n"
+            L"  nttimebomb /mmc-approval-restore [OFFLINE_WINDOWS_ROOT]\n"
+            L"Without a path, or with the running installation, AppInfo is in use: the replacement is\n"
+            L"staged, applied at the next start, and keeps the original timestamps. A path on\n"
+            L"another volume is edited in place. Unknown layouts are rejected.\n\n"
             L"CI BUILD-EXPIRY PATCH\n"
-            L"  nttimebomb /cishim OFFLINE_WINDOWS_ROOT\n"
+            L"  nttimebomb /cishim OFFLINE_ROOT|FOLDER|FILE\n"
             L"Example: nttimebomb /cishim D:\\mount\n"
-            L"Processes System32\\ci.dll and a structurally compatible System32\\winload.efi.\n"
-            L"A missing or unsupported UEFI loader stops the operation before CI is written.\n"
+            L"Processes System32\\ci.dll and the boot loaders: winload.efi, winresume.efi,\n"
+            L"the legacy winload.exe and winresume.exe, and their System32\\Boot copies.\n"
+            L"The loader part keeps only the explicit BCD nointegritychecks option. The\n"
+            L"forced integrity option and the image-hash and catalog gates belong to\n"
+            L"/winload-modify. A missing or unsupported UEFI or legacy loader stops the\n"
+            L"operation before CI is written. Accepts a single extracted file or a folder.\n"
             L"Recognizes an ARM64 CI that already returns zero without changing the loader.\n"
             L"No build/version query is used.\n"
             L"Preview x64 expiry callbacks are identified structurally and return a zero expiry\n"
             L"time with success. Existing earlier x86/x64 FlightSigned CI rules are also accepted.\n"
             L"Unknown or ambiguous structures fail without writing. Native x86 newer preview\n"
             L"expiry callbacks are not yet verified; x86 hosts can service the x64 samples.\n"
-            L"Backups beside each changed file use .nttp-original and retain its permissions.\n"
+            L"Backups beside each changed file use .bak and retain its permissions.\n"
             L"Existing backups are never overwritten. Retry recognizes already patched files.\n"
-            L"With the patched loader, set nointegritychecks on in the target Windows BCD\n"
-            L"entry, with Secure Boot off. The tool prints a command and leaves BCD to you.\n"
-            L"  nttimebomb /cishim-boot OFFLINE_WINDOWS_ROOT\n"
-            L"Compatibility command for the UEFI loader patch alone. See README for steps.\n\n"
+            L"The loader rejects the modified ci.dll with 0xc0000428 unless the target entry has\n"
+            L"nointegritychecks on, with Secure Boot off. Add /bcd EFI_PARTITION to the command\n"
+            L"(or run nttimebomb /bcd S:\\) before booting.\n"
+            L"  nttimebomb /cishim-boot OFFLINE_ROOT|FOLDER|FILE [/bcd EFI_SYSTEM_PARTITION]\n"
+            L"code of every step. Run it the second time after a start attempt to read the result.\n\n"
+            L"  nttimebomb /bcd EFI_SYSTEM_PARTITION [ENTRY_GUID]\n"
+            L"  nttimebomb /bcd-show EFI_SYSTEM_PARTITION [ENTRY_GUID]\n"
+            L"  nttimebomb /bcd-template OFFLINE_WINDOWS_ROOT\n"
+            L"Sets or prints nointegritychecks for the entry (default {default}) through bcdedit\n"
+            L"against the offline BCD store. /cishim and /cishim-boot accept /bcd ESP to do the\n"
+            L"same in one step.\n\n"
+            L"RESTORE THE RETAINED ORIGINALS\n"
+            L"  nttimebomb /restore OFFLINE_ROOT|FOLDER|FILE\n"
+            L"Each changed file keeps a verified FILE.bak with its original owner, DACL and\n"
+            L"attributes; older packages used FILE.nttp-original, which is also accepted.\n"
+            L"Restore writes the original bytes back, re-applies the retained metadata,\n"
+            L"verifies the result and removes that backup. Files without a retained\n"
+            L"original are left alone.\n"
+            L"  nttimebomb /cishim-restore ROOT|FOLDER|FILE        ci.dll and every loader\n"
+            L"  nttimebomb /cishim-boot-restore ROOT|FOLDER|FILE   loaders only\n"
+            L"  nttimebomb /winload-modify-restore ROOT|FOLDER|FILE  EFI and legacy loaders\n"
+            L"Use /cishim-restore from WinPE to\n"
+            L"undo a /cishim that does not boot.\n\n"
             L"NT6 TOKENS AND OPTIONAL BRANDING\n"
             L"  nttimebomb /nt6 /file DONOR_FOLDER /target OFFLINE_WINDOWS_ROOT\n"
             L"Copies only System32\\spp\\tokens from the donor. A donor may be its image root,\n"
@@ -610,8 +672,9 @@ static int help(void)
             L"files and folders. If DONOR_FOLDER contains Branding (or Windows\\Branding), its\n"
             L"contents also update target Windows\\Branding with TrustedInstaller Full Control.\n"
             L"This detection is automatic, with no extra switch. Existing target-only files remain.\n"
-            L"For builds below 15058 this mode changes only tokens and optional Branding.\n"
-            L"Build >=15058 follows the image policy below: rename LicensingUI, then suggest /cishim.\n\n"
+            L"This mode changes only tokens and the optional Branding. The FlightSigned token\n"
+            L"replacement applies below Build 15063 only; newer images are refused with a pointer\n"
+            L"to /cishim and /slshim.\n\n"
             L"COMPLETE INSTALLATION MEDIA\n"
             L"  nttimebomb /media SOURCE_ISO_OR_FOLDER /work NEW_FOLDER /out NEW_ISO\n"
             L"    [/oscdimg OSCDIMG_EXE] [/7zip SEVENZIP_EXE] [/spp RTM_FOLDER]\n"
@@ -619,8 +682,8 @@ static int help(void)
             L"  nttimebomb /media SOURCE /work NEW_FOLDER /out NEW_ISO /nt6 TOKENS_DONOR\n"
             L"With /spponly or /nt6, only all install.wim indexes are serviced. /nt6 also applies\n"
             L"optional Branding using the same automatic donor detection. boot.wim and\n"
-            L"media-root boot files are preserved. The Build >=15058 policy also applies to these\n"
-            L"replacement modes: rename LicensingUI, skip replacement, and suggest /cishim.\n"
+            L"media-root boot files are preserved. Build 15063 and newer is refused without\n"
+            L"changing anything and points at /cishim and /slshim instead.\n"
             L"Copies or extracts the source into a new workspace, services every boot.wim and\n"
             L"install.wim index, and patches the media-root bootmgr and bootmgr.efi.\n"
             L"Requires standalone sources\\boot.wim and sources\\install.wim plus BIOS/UEFI\n"
@@ -637,9 +700,9 @@ static int help(void)
             L"  /spponly ROOT /spp DONOR\n"
             L"  /spponly INPUT_WIM /out NEW_WIM /spp DONOR [/index N|all]\n"
             L"  /image ROOT /spponly /spp DONOR\n"
-            L"/spponly replaces SPP only below Build 15058, preserving boot files, CI, kernels,\n"
-            L"and LicensingUI. A donor is required for those builds. For multi-index WIMs, shared spp*\n"
-            L"binaries stay at the donor root (and SysWOW64); each EditionID folder contains spp\\\n"
+            L"/spponly replaces SPP below Build 15063, preserving boot files, CI, kernels and\n"
+            L"LicensingUI. A donor is required. Build 15063 and newer is refused entirely. For\n"
+            L"multi-index WIMs, shared spp*\n"
             L"and the SKU's *.cat files side by side. A CatRoot subfolder is optional.\n"
             L"Missing SKU folders or usable catalogs stop the operation.\n"
             L"  /bootwim EXTRACTED_ROOT\n"
@@ -647,19 +710,94 @@ static int help(void)
             L"Use /out with WIM input. /image and /spponly default to index 1; /index all selects\n"
             L"every index. /bootwim defaults to all indexes. Single-index WIMs and mounted roots\n"
             L"keep the original flat donor layout. SKU selection applies to standard /spp only.\n"
-            L"For Build >=15058, normal image/SPP/NT6 workflows only rename LicensingUI.exe\n"
-            L"and suggest the explicit /cishim command. Restore and read-only commands retain their scope.\n"
-            L"Read README.md for donor\n"
+            L"From Build 15063 on, the image, SPP and NT6 workflows make no change at all and\n"
+            L"ask for /cishim and /slshim instead. Restore and read-only commands\n"
+            L"retain their scope. Read README.md for donor\n"
             L"layouts, SPP exclusions, restore examples, boot diagnostics, and known limitations.\n");
     return 0;
 }
 
 static int run_ci(int argc, wchar_t **argv)
 {
-    wchar_t root[PATH_SIZE];
     BOOL loader = !_wcsicmp(argv[1], L"/cishim-boot");
-    if (argc != 3 || !normalize(root, argv[2]) || !offline_root(root, FALSE)) {
-        fwprintf(stderr, L"Usage: nttimebomb %ls OFFLINE_WINDOWS_ROOT\n", argv[1]);
+    const wchar_t *bcd = NULL;
+    if (argc == 5 && !_wcsicmp(argv[3], L"/bcd"))
+        bcd = argv[4];
+    else if (argc != 3) {
+        fwprintf(stderr, L"Usage: nttimebomb %ls OFFLINE_ROOT|FOLDER|FILE [/bcd EFI_SYSTEM_PARTITION]\n", argv[1]);
+        return 2;
+    }
+    if ((in_winpe() && !is_system()) || !enable_privilege(L"SeBackupPrivilege") || !enable_privilege(L"SeRestorePrivilege")) {
+        privilege_hint();
+        return 3;
+    }
+    wchar_t esp[PATH_SIZE];
+    if (bcd && !normalize(esp, bcd)) {
+        fwprintf(stderr, L"Use a local drive path for the EFI System Partition.\n");
+        return 2;
+    }
+    BCRYPT_ALG_HANDLE algorithm;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+        return 1;
+    BOOL ok = patch_ci_command(algorithm, argv[2], loader);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (ok && bcd && !bcd_set_nointegritychecks(esp, L"{default}"))
+        ok = FALSE;
+    return ok ? 0 : 1;
+}
+
+static int run_cert(int argc, wchar_t **argv)
+{
+    /* /wintrust is the one entry point: a path selects the image to service and a
+       path inside the running installation uses the staged replacement. Without a
+       path it always means the running installation. */
+    BOOL restore = !_wcsicmp(argv[1], L"/wintrust-restore") ||
+                   !_wcsicmp(argv[1], L"/wintrust-approval-restore");
+    BOOL explicit_offline = !_wcsicmp(argv[1], L"/wintrust-approval") ||
+                            !_wcsicmp(argv[1], L"/wintrust-approval-restore");
+    if (argc > 3) {
+        fwprintf(stderr, L"Usage: nttimebomb %ls [OFFLINE_ROOT|FOLDER|FILE]\n", argv[1]);
+        return 2;
+    }
+    wchar_t path[PATH_SIZE];
+    BOOL have_path = argc == 3;
+    if (have_path && !normalize(path, argv[2])) {
+        fwprintf(stderr, L"Use a local drive path.\n");
+        return 2;
+    }
+    BOOL live = !have_path;
+    if (have_path && !explicit_offline)
+        live = wintrust_running(path);
+    if (live) {
+        if (in_winpe()) {
+            fwprintf(stderr, L"Use /wintrust OFFLINE_ROOT from WinPE or another Windows installation.\n");
+            return 2;
+        }
+        BCRYPT_ALG_HANDLE algorithm;
+        if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+            return 1;
+        BOOL ok = wintrust_live(algorithm, restore);
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        return ok ? 0 : 1;
+    }
+    if ((in_winpe() && !is_system()) || !enable_privilege(L"SeBackupPrivilege") || !enable_privilege(L"SeRestorePrivilege")) {
+        privilege_hint();
+        return 3;
+    }
+    BCRYPT_ALG_HANDLE algorithm;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+        return 1;
+    BOOL ok = wintrust_offline(algorithm, path, restore);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    return ok ? 0 : 1;
+}
+
+static int run_winload(int argc, wchar_t **argv)
+{
+    wchar_t efi[PATH_SIZE], legacy[PATH_SIZE];
+    if ((argc != 3 && argc != 4) || !normalize(efi, argv[2]) ||
+        (argc == 4 && !normalize(legacy, argv[3]))) {
+        fwprintf(stderr, L"Usage: nttimebomb %ls EFI_SYSTEM_PARTITION [LEGACY_VOLUME_OR_WINDOWS_ROOT]\n", argv[1]);
         return 2;
     }
     if ((in_winpe() && !is_system()) || !enable_privilege(L"SeBackupPrivilege") || !enable_privilege(L"SeRestorePrivilege")) {
@@ -669,7 +807,38 @@ static int run_ci(int argc, wchar_t **argv)
     BCRYPT_ALG_HANDLE algorithm;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
         return 1;
-    BOOL ok = patch_ci_file(algorithm, root, loader);
+    BOOL ok = patch_winload_modify(algorithm, efi, argc == 4 ? legacy : NULL);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    return ok ? 0 : 1;
+}
+
+static unsigned restore_set(const wchar_t *command)
+{
+    if (!_wcsicmp(command, L"/wintrust-restore"))
+        return RESTORE_CERT;
+    if (!_wcsicmp(command, L"/winload-modify-restore"))
+        return RESTORE_LOADER;
+    if (!_wcsicmp(command, L"/cishim-boot-restore"))
+        return RESTORE_LOADER;
+    if (!_wcsicmp(command, L"/cishim-restore"))
+        return RESTORE_CI;
+    return RESTORE_ALL;
+}
+
+static int run_restore(int argc, wchar_t **argv)
+{
+    if (argc != 3) {
+        fwprintf(stderr, L"Usage: nttimebomb %ls OFFLINE_ROOT|FOLDER|FILE\n", argv[1]);
+        return 2;
+    }
+    if ((in_winpe() && !is_system()) || !enable_privilege(L"SeBackupPrivilege") || !enable_privilege(L"SeRestorePrivilege")) {
+        privilege_hint();
+        return 3;
+    }
+    BCRYPT_ALG_HANDLE algorithm;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+        return 1;
+    BOOL ok = patch_restore_command(algorithm, argv[2], restore_set(argv[1]));
     BCryptCloseAlgorithmProvider(algorithm, 0);
     return ok ? 0 : 1;
 }
@@ -971,14 +1140,44 @@ static int check_boot(int argc, wchar_t **argv)
 
 int wmain(int argc, wchar_t **argv)
 {
+    if (argc == 2 && (!_wcsicmp(argv[1], L"--version") || !_wcsicmp(argv[1], L"/version"))) {
+        wprintf(L"NT Timebomb Patch " NTTP_VERSION_TEXT L"\n");
+        return 0;
+    }
     if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc") || !_wcsicmp(argv[1], L"/mmc-restore")))
         return run_mmc(argc, argv);
-    if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc-approval") || !_wcsicmp(argv[1], L"/mmc-approval-restore")))
+            if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc-approval") || !_wcsicmp(argv[1], L"/mmc-approval-restore")))
         return run_mmc_approval(argc, argv);
     if(argc>=2 && (!_wcsicmp(argv[1],L"/slshim") || !_wcsicmp(argv[1],L"/slshim-restore")))
         return run_slshim(argc,argv);
     if (argc >= 2 && (!_wcsicmp(argv[1], L"/cishim") || !_wcsicmp(argv[1], L"/cishim-boot")))
         return run_ci(argc, argv);
+            if (argc >= 2 && !_wcsicmp(argv[1], L"/wintrust-status")) {
+        BCRYPT_ALG_HANDLE algorithm;
+        if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+            return 1;
+        int result = run_wintrust_status(algorithm, argc, argv);
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        return result;
+    }
+    /* /wintrust, /wintrust-restore, /wintrust-approval and /wintrust-approval-restore
+       are implemented below but no longer dispatched: replacing the certificate
+       modules is too easy to mis-sequence with the other live operations, and that
+       produced unbootable installations. The code is kept for reference. */
+    if (argc >= 2 && !_wcsicmp(argv[1], L"/winload-modify"))
+        return run_winload(argc, argv);
+    if (argc >= 2 && (!_wcsicmp(argv[1], L"/bcd") || !_wcsicmp(argv[1], L"/bcd-show")))
+        return run_bcd(argc, argv);
+    if (argc >= 2 && !_wcsicmp(argv[1], L"/bcd-template")) {
+        if (argc != 3) {
+            fwprintf(stderr, L"Usage: nttimebomb /bcd-template OFFLINE_ROOT\n");
+            return 2;
+        }
+        return bcd_template(argv[2]) ? 0 : 1;
+    }
+    if (argc >= 2 && (!_wcsicmp(argv[1], L"/restore") || !_wcsicmp(argv[1], L"/cishim-restore") ||
+                      !_wcsicmp(argv[1], L"/cishim-boot-restore") || !_wcsicmp(argv[1], L"/winload-modify-restore")))
+        return run_restore(argc, argv);
     if (argc == 1 || (argc == 2 && (!_wcsicmp(argv[1], L"/?") || !_wcsicmp(argv[1], L"/help") ||
                                    !_wcsicmp(argv[1], L"--help"))))
         return help();
@@ -1080,3 +1279,5 @@ int wmain(int argc, wchar_t **argv)
         wprintf(L"Verified copies saved in %ls.\n", output);
     return 0;
 }
+
+

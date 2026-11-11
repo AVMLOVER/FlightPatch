@@ -1,4 +1,4 @@
-/* Offline in-place servicing. Probe all inputs and stage WinRE before writing. */
+﻿/* Offline in-place servicing. Probe all inputs and stage WinRE before writing. */
 typedef struct {
     const wchar_t *path;
     Role role;
@@ -50,6 +50,8 @@ typedef struct {
     BY_HANDLE_FILE_INFORMATION id;
     Role role;
     Output before, after;
+    char base_sha[65];   /* retained original used as the patch base */
+    FILETIME created, accessed, written;   /* timestamps of the original object */
     BOOL touched, writable, restore_readonly;
 } OfflineEdit;
 
@@ -519,3 +521,4 @@ static BOOL patch_offline_image(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root
     }
     return ok;
 }
+

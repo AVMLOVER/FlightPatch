@@ -1,3 +1,256 @@
+# 5.3.0 validation
+
+Offline verification used the x64 Windows 10 build 21390 System32 files of a
+mounted image: `ci.dll`, `winload.efi`, `winresume.efi`, `winload.exe`,
+`winresume.exe`, `wintrust.dll`, `crypt32.dll`, plus the SysWOW64
+`wintrust.dll` and `crypt32.dll`. Each mode was checked on a copy; the mounted
+image was not modified.
+
+## Boot failures seen on target installations
+
+Two target installations were serviced and both stopped before the desktop.
+
+| Target | Applied | Result |
+| --- | --- | --- |
+| 21390 x64 | `/cishim` + `/wintrust` | green screen `0xc000021a`, WinRE automatic repair |
+| 18247 x64 | `/wintrust` only (CI and loader were patched by 5.3.0 earlier) | green screen `0xc000021a` |
+
+The 21390 recovery log (`Windows\System32\Logfiles\Srt\SrtTrail.txt`) records
+`0xc000021a` with second parameter `0xc0000428` and reports a corrupt boot-critical
+file. 18247 had been booting with the earlier CI and loader patch, so the change
+that appeared with both failures is the rewritten `wintrust.dll`/`crypt32.dll`
+pair, not the CI or loader rules. `STATUS_INVALID_IMAGE_HASH` there is produced by
+image validation of the rewritten signed DLLs.
+
+Consequences for the rules and for testing:
+
+- `/cishim` and `/cishim-boot` now apply only the integrity-option family to a
+  loader (keep the BCD option, force the loader's own option). The image-hash,
+  catalog and revocation gate patch moved back to `/winload-modify`, where a
+  release loader has to accept a modified image.
+- `/wintrust` prints the risk before and after the write, and `/wintrust-restore`
+  is the documented WinPE recovery.
+- The semantic-neutral `echo` probe in README distinguishes "any edit to this DLL
+  is rejected" from "this patch crashes".
+- The restore aliases now select a set: `/cishim-restore` clears CI and loaders,
+  `/wintrust-restore` clears the certificate modules, `/restore` clears all.
+
+## Round 10: the three uiAccess programs are a LUA problem
+
+The failure of `osk.exe`, `Narrator.exe` and `Magnify.exe` is not the expired
+signature, not `consent.exe` and not AppInfo's auto-approval table. Measured on
+21390:
+
+| Change | Result |
+| --- | --- |
+| wintrust/crypt32 patched, four modules signed and trusted | programs still fail |
+| `uiAccess="true"` removed from the manifests and signed | programs still fail |
+| `consent.exe` AMSI results forced to zero, signed, trusted | programs still fail |
+| three programs added to AppInfo's auto-approval table | programs still fail |
+| `EnableLUA=0` (the LUA subsystem itself), reboot | **all three start** |
+
+The error is a plain dialog with `ERROR_DS_REFERRAL` (8235), not a UAC prompt, and
+it appears only while `EnableLUA=1`. With LUA disabled no filtered token, no consent
+and no uiAccess token request exist, so the failing path in `CreateProcess` is never
+entered. Lowering the UAC slider does not help because the LUA subsystem stays on.
+
+Consequence for this package: none of the certificate, consent or AppInfo work is
+needed for these three programs. `EnableLUA=0` is a user decision with its own
+costs (no UAC prompts at all, and Store/UWP applications stop starting), so it is
+not automated here.
+
+## Round 9: build-generic certificate matchers
+
+The certificate rules no longer depend on the exact shapes seen on 21390:
+
+- crypt32 exports are still the anchors, but the chain-policy branch is now found
+  from the `CERT_E_EXPIRED` constant plus the jump that skips its assignment,
+  accepting `mov reg, imm32` and `mov [mem], imm32` with disp8 or disp32.
+- wintrust status bits are found by scanning 32 bytes after the call site for
+  `test reg,reg` + short jump + any bit-set encoding (`bts`, `or dword`, `or byte`),
+  so register allocation and NOP padding no longer matter, and the already patched
+  `nop nop` form is recognized.
+
+Checked against the mounted 21390 files:
+
+| File | Result |
+| --- | --- |
+| System32\wintrust.dll (x64) | 0x25832, 0x2584E — identical to the hand-matched offsets |
+| System32\crypt32.dll (x64) | 0x179C0, 0x8C7D0, 0xD2586 — identical |
+| SysWOW64\wintrust.dll (x86) | 0x2928B, 0x292A1 |
+| SysWOW64\crypt32.dll (x86) | 0x21180, 0x75A50, **0xAF64D** — the policy branch that the previous matcher missed |
+
+Pre-patching the two status-bit branches to `90 90` makes the run report "already
+patched", and pre-patching the policy byte to `EB` is recognized as existing.
+
+## Round 8: only one of four queued replacements happened
+
+After the live run reported success and the machine restarted, `/wintrust-status`
+showed only `System32\crypt32.dll` replaced (`signed here: yes`, `0x0`, signer
+"NT Timebomb Patch local wintrust"); `System32\wintrust.dll` and both SysWOW64
+modules were still stock (`0x800B0101`, signer "Microsoft Windows"), and the
+journal listed all four entries.
+
+Cause: the scheduling used `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING |
+MOVEFILE_DELAY_UNTIL_REBOOT)`. Microsoft documents those two flags as not
+combinable, and in practice only one of the four queued operations was applied.
+Both the apply and the restore path now queue two documented operations per file:
+delete the target at boot, then rename the staged file onto it. The receipt also
+keeps the full hex SHA-256 strings instead of truncating them to 32 bytes.
+
+## Round 7: the live run never applied anything
+
+The target's `/wintrust-status` after `/wintrust-approval C:\` and a restart showed
+`signed here: no` and `WinVerifyTrust 0x800B0101` (`CERT_E_EXPIRED`) for all four
+modules, while `mmc.exe` was `0x0`/state 6 with signer "NT Timebomb Patch local
+MMC". So the modules were still the stock Microsoft binaries: the live run had
+aborted at "Cannot retain the current ...".
+
+Cause: the retained-original copy opened its destination with `GENERIC_WRITE`
+only, but `spp_copy_verified` rereads the destination to compare it, so the copy
+always failed. Fixed by opening the copy with `GENERIC_READ | GENERIC_WRITE`; the
+failure message now carries the Win32 code and states that the target was not
+changed.
+
+Two useful facts from the same report:
+
+- The MMC exception installed earlier is still trusted (`0x0`, signer "NT
+  Timebomb Patch local MMC"), so a local self-signature plus Root/TrustedPublisher
+  is accepted by this installation.
+- `osk.exe`, `Narrator.exe` and `Magnify.exe` return `TRUST_E_NOSIGNATURE`
+  (`0x800B0100`) because they are catalog-signed; the `WTGetSignatureInfo` state 0
+  line does not resolve catalogs, so it is not evidence about them.
+
+## Round 6 fixes
+
+- `/bcd` and `/bcd-show` passed the bare name `bcdedit.exe` as `lpApplicationName`,
+  which fails on a trimmed WinPE PATH and under the 32-bit `System32` view. The
+  tool now resolves the binary through `GetSystemDirectoryW`,
+  `GetWindowsDirectoryW` and `SearchPathW`, prints the command line it runs, and
+  otherwise prints the command for manual use. Verified against a synthetic ESP:
+  the resolved path is launched and its own error is reported.
+- `/wintrust-approval` now detects a path inside the running Windows installation
+  and switches to the staged live flow (sign, trust, pending rename) instead of
+  failing on a file that is in use. The detection also accepts a parent such as
+  `C:\`, so the reported "Target resolves ... inside the running Windows
+  installation" no longer appears for a live root.
+  Verified for `C:\`, `C:\Windows` and a single live System32 DLL: each prints
+  the staged-flow notice and then the elevation check.
+- Key store provider failures now name the failing NCrypt call. `0x800706D9`
+  (`ERROR_EPT_S_NOT_REGISTERED`) means the CNG Key Isolation service is not
+  running; the signer falls back to CryptoAPI in that case.
+
+## Target-build regressions seen in round 4
+
+| Target | Applied | Result |
+| --- | --- | --- |
+| latest Windows 11 preview | `/cishim` (loader patch with the forced integrity option) | `0xc0000098` from the BCD stage |
+| latest Windows 11 preview | `/cishim` (BCD option preservation only) | `0xc0000428` on the loader |
+| 21390 | `/wintrust-approval` in WinPE | "Cannot create the local signing certificate (Win32 0)" |
+
+The first failure came from the forced-integrity-option edit that `/cishim` had
+started to apply on top of the option preservation; newer previews changed that
+BCD handling. `/cishim` and `/cishim-boot` now apply **only** the option
+preservation and refuse a loader that does not match it, while `/winload-modify`
+keeps the complete gate set.
+
+The second failure is the loader refusing the modified `ci.dll` because the entry
+had no effective `nointegritychecks`. The CI patch cannot work without that BCD
+option, so `/cishim` and `/cishim-boot` accept `/bcd EFI_PARTITION`, and
+`/bcd`/`/bcd-show` drive `bcdedit /store` directly. The post-patch message now
+states the `0xc0000428` consequence instead of a generic reminder.
+
+The WinPE signing failure is environmental: WinPE/WinRE ship neither the software
+key store provider nor an RSA cryptographic provider. On the 21390 WinPE the calls
+returned `0x80090029` (`NTE_NOT_SUPPORTED`) for the key store and `0x8009001E`
+(`NTE_PROV_DLL_NOT_FOUND`) for the RSA/AES provider, and the classic providers are
+absent as well, so a private key cannot be created there at all. `signer.h` now
+tries the key store provider, the RSA/AES provider, the enhanced and strong
+providers, and the default `PROV_RSA_FULL` provider, labels every failure with its
+code, and stops before any file is written when none is usable. Signing therefore
+requires a full Windows installation; the offline volume can be attached to any
+Windows host, and the ARM64 build of the tool can service an x64 image.
+
+Both working paths were re-verified after the change: the key store provider signs
+and WinVerifyTrust returns `0x800B0109` (valid signature, untrusted root), and with
+the key store provider forced off the CryptoAPI path produces the same result.
+
+## Local signature for the certificate modules
+
+The 21390 and 18247 failures above showed that a byte patch of a user-mode system
+DLL is rejected whatever it contains, so both `/wintrust` forms now sign the
+result with a local certificate (`src/signer.h`, shared with the MMC helper) and
+install that certificate as a trusted root and trusted publisher.
+
+Verified on the host with the x64 21390 files, in a copy:
+
+- `/wintrust-approval FOLDER` patches, strips the stale certificate table, embeds
+  a new signature and re-checks it with `CryptMsgControl(CMSG_CTRL_VERIFY_SIGNATURE)`.
+- `WinVerifyTrust` on the signed copies returns `0x800B0109`
+  (`CERT_E_UNTRUSTEDROOT`) instead of `0x800B0100` (`TRUST_E_NOSIGNATURE`), which
+  proves the new signature parses and covers the file; only the trust anchor is
+  missing on a host that did not receive the certificate.
+- Re-running the mode reports "already carries this package's local signature" and
+  writes nothing.
+- `/wintrust-approval-restore` returns both files byte-identical to the mounted
+  originals and removes the retained `.bak`.
+- `/cishim` and `/cishim-restore` still pass after the engine change that closes
+  each handle before the post-processing step.
+
+The offline trust path was then exercised end to end on a writable copy of the
+21390 SOFTWARE hive under a synthetic offline root:
+
+- `/wintrust-approval ROOT` patched and signed all four modules, booted `offreg`
+  from `System32`, created
+  `Microsoft\SystemCertificates\{Root,TrustedPublisher}\Certificates\<thumbprint>`
+  with a `Blob` value, saved the hive and replaced the file; the previous hive is
+  kept as `SOFTWARE.nttp-wintrust`.
+- Re-opening the new hive with `offreg` returned the 763-byte DER from both
+  stores, and its SHA-1 equals the thumbprint key that was created.
+- `/wintrust-approval-restore ROOT` restored the four files byte-identical to the
+  mounted originals, removed both certificate keys, and republished the hive.
+
+Not verified here: the live `/wintrust` staging and pending-rename path (needs an
+installed, elevated system), and whether the target's image validation accepts a
+locally signed copy. Those need a VM test; the offline mode is the safe way to
+try it.
+
+## Structural matches and edits
+
+| Mode | File | Recognized edits |
+| --- | --- | --- |
+| /cishim | ci.dll | CI zero-expiry leaf + build-expiry callback |
+| /cishim-boot | winload.efi | image hash gate, catalog gate, revocation list, file revocation, loader integrity option, kept BCD nointegritychecks option |
+| /cishim-boot | winresume.efi | same gates and forced loader integrity option; winresume has no option-removal loop |
+| /cishim-boot | winload.exe (legacy) | same set as winload.efi, including the kept BCD option (the application entry is spilled through R12 instead of RBX) |
+| /cishim-boot | winresume.exe | gates and forced loader integrity option |
+| /wintrust | wintrust.dll | certificate time validity + validity nesting status branches |
+| /wintrust | crypt32.dll | `CertVerifyTimeValidity`, `CertVerifyValidityNesting`, chain-policy expiry branch |
+
+The crypt32 patch changes exactly six bytes plus the PE checksum: the two export
+entries become `xor eax,eax; ret` and `mov eax,1; ret`, and the policy branch
+`CERT_E_EXPIRED` assignment is entered from the accepted path (`7e` becomes
+`eb`). The x86 SysWOW64 copies use `or dword ptr [reg], 0x01000000` and
+`push 0x800B0101` forms; both are matched.
+
+## Behaviour checked
+
+- Repeated runs report `already patched` and write nothing.
+- Restore returns every file byte-identical to the mounted original and removes
+  the retained `.bak`.
+- A partially patched file left by an earlier rule set is completed; the
+  retained original is the patch base and a subset match is verified.
+- An unsupported loader stops the run before any file is written, and no backup
+  is created (checked with `ntoskrnl.exe` renamed to `winload.efi`).
+- Paths inside the running Windows installation are refused.
+- Hard-linked `System32\Boot\winload.efi` is patched once and reported once.
+- Every patched file keeps a valid PE checksum; an unmodified rerun is
+  byte-identical.
+
+Booting the patched 21390 image, hibernation resume, and the Defender /
+Narrator / Magnifier / On-Screen Keyboard start-up paths still require testing
+inside that installation; this environment cannot run them.
+
 # 5.2.1 validation
 
 The supplied preview samples, rather than stock release CI, were used to validate the expiry modification:

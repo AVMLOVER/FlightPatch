@@ -1,9 +1,20 @@
-# NT Timebomb Patch 5.2.1
+﻿# NT Timebomb Patch 5.3.0
 
-Version 5.2.1 adds the two-stage MMC expiry repair, pairs `/cishim` with the
-compatible UEFI loader patch, and updates SLShim's edition handling, settings
-compatibility, Windows on Arm support, and backup cleanup. Download the complete
-binary ZIP from the [5.2.1 release](https://github.com/AVMLOVER/FlightPatch/releases/tag/v5.2.1).
+Chinese documentation: [README.zh-CN.md](README.zh-CN.md).
+
+Run `nttimebomb.cmd /version` to identify the local build. The executable's
+Details tab also shows its file and product versions.
+
+Version 5.3.0 patches the preview CI expiry callback together with every boot
+loader the image uses: `winload.efi`, `winresume.efi` and the legacy
+`winload.exe`/`winresume.exe`, including their `System32\Boot` hard links. The
+same commands accept an offline Windows root, a folder of separately extracted
+files, or one single file. `/winload-modify` patches the release loader of a
+dual-boot EFI or BIOS installation so it accepts the modified image. `/bcd` and
+`/bcd-show` set and print the boot options the CI patch needs, `/bcd-template` does
+the same for the BCD template inside an image, and `/slshim` replaces the licensing
+layer. Every changed file keeps a verified `.bak`, and
+`/restore` puts the originals back.
 
 NT Timebomb Patch is an offline command-line tool for Windows prerelease images. It replaces NT6 licensing tokens and optional Branding, services older FlightSigned boot files, processes installation media, and rebuilds BIOS/UEFI ISOs with Microsoft OSCDIMG. The former FlightPatch command name remains available as a compatibility launcher.
 
@@ -23,20 +34,60 @@ WIM servicing uses Windows DISM. ISO creation requires OSCDIMG from the Microsof
 
 ## Explicit CI build-expiry patch
 
-Use /cishim with an already mounted or deployed offline Windows root. Supply the directory containing Windows, rather than the ci.dll filename or the Windows directory itself.
+Use /cishim with an already mounted or deployed offline Windows root, a folder of separately extracted System32 files, or one single file. Supply the directory containing Windows; a flattened extraction such as `ci.dll`, `winload.efi`, `winresume.efi` in one folder is also accepted.
 
 ~~~bat
 nttimebomb.cmd /cishim D:\Mount
-nttimebomb.cmd /cishim W:\
+nttimebomb.cmd /cishim W:\ /bcd S:\
+nttimebomb.cmd /cishim D:\Extracted
+nttimebomb.cmd /cishim D:\Extracted\ci.dll
 ~~~
 
-This command prepares `Windows\System32\ci.dll` and `Windows\System32\winload.efi` as a pair. A missing, mismatched, or unsupported loader stops the operation before CI is written. It identifies compatible layouts without a build-number check. Run /image first if you also want the newer-image LicensingUI rename, then run /cishim before committing your manually mounted image.
+The modified `ci.dll` is loaded by the loader, which rejects it with `0xc0000428`
+unless the target entry has `nointegritychecks` on and Secure Boot is off. Add
+`/bcd EFI_SYSTEM_PARTITION` to the command, or set it yourself:
+
+~~~bat
+nttimebomb.cmd /bcd S:\
+nttimebomb.cmd /bcd S:\ {GUID-OF-THE-TEST-ENTRY}
+nttimebomb.cmd /bcd-show S:\
+~~~
+
+`/bcd` and `/bcd-show` drive `bcdedit /store` against the offline BCD on that
+partition; `{default}` is used when no entry GUID is given. `/bcd` writes two
+elements in one run:
+
+- `nointegritychecks on`, which the loader needs to accept the patched `ci.dll`;
+- `recoveryenabled No`, so a failed attempt stops in the boot menu instead of
+  starting the automatic repair, which would rewrite the store and drop the flag.
+
+`/bcd-show` enumerates the entry and prints both elements explicitly, because
+`bcdedit` hides default values in the plain enumeration.
+
+This is separate from the loader patch on purpose: the CI patch must not be applied
+without the boot option. The tool resolves `bcdedit.exe` through the system
+directory, the Windows directory and `PATH` before launching it, prints the exact
+command line it runs, and falls back to telling you the command to run by hand. A
+trimmed WinPE PATH or a redirected 32-bit view no longer breaks it.
+
+For image building, `/bcd-template OFFLINE_ROOT` writes the same two elements into
+`Windows\System32\config\BCD-Template`, so newly created stores on a deployed
+image already carry them:
+
+~~~bat
+nttimebomb.cmd /bcd-template D:\Mount
+~~~
+
+
+The command prepares `Windows\System32\ci.dll` plus every boot loader it finds: `winload.efi`, `winresume.efi`, the legacy `winload.exe` and `winresume.exe`, and their `System32\Boot` copies. A missing, mismatched, or unsupported winload stops the operation before CI is written; the two `Boot` copies are recognised as hard links to the same files and patched once. The loader part is deliberately small: it keeps the explicit `nointegritychecks` BCD option through `OslPrepareTarget` and nothing else. It does not force the loader's own integrity option, and it does not touch the image-hash, catalog or revocation gates; those belong to `/winload-modify` and to the older `/image` flow. Newer previews changed that BCD handling, and the extra forced-option edit made such a build stop with `0xc0000098`, so a loader that does not match the option-preservation structure is now refused instead of patched. `winresume` has no option-removal loop and therefore matches nothing; it is reported and left unchanged. The legacy `winload.exe` keeps the explicit BCD option exactly like the UEFI loader, which is what a BIOS boot needs after the CI patch. It identifies compatible layouts without a build-number check. On Build 15063 and newer the legacy `/image` flow makes no change at all and points at `/cishim` and `/slshim`; the CI patch itself has no build boundary.
+
+Single files are matched by structure, not by name: `/cishim FILE` recognises the CI expiry callback in a `ci.dll` and the loader rules in a `winload`/`winresume` image. Use `/cishim-boot` to apply only the loader rules.
 
 The expiry principle comes from [gailium119/cishim](https://github.com/gailium119/cishim/blob/c0ec25dbcb8e11109e24297c40d72c2ab6b24a8d/cishim/cishim.c): its CiGetBuildExpiryTime callback writes zero to the output and returns success. NT Timebomb Patch implements that behavior independently in the original CI. It identifies the preview's self-image expiry routine and confirms that CiInitialize registers it as a callback. The supplied preview 17746 and 29698 samples use different callback-table slots, both of which are checked structurally. An entry jump redirects to a small leaf routine in verified INT3 padding outside unwind-function ranges; the original unwind tables and other CI callbacks are retained. The full cishim module and its other signature-validation stubs are not bundled.
 
 Newer preview CI replacement has file-level validation on the supplied x64 samples. The ARM64 build recognizes the already-zero callback on the supplied 28000 retail sample and skips writes. A nonzero ARM64 preview callback still needs an original preview sample. Missing anchors, ambiguous matches, or unavailable leaf space stop the operation before writing.
 
-Before writing, the tool saves a `.nttp-original` backup beside each file it will patch, with verified contents, owner, group, DACL, inheritance protection, and last-write time. It prepares and locks both changed files before writing either one. A write failure attempts to restore the original bytes. Existing backups are never overwritten. A conflicting backup stops the write. Re-running `/cishim` recognizes existing patches. Preserve the original backups for offline recovery.
+Before writing, the tool saves a `.bak` copy beside each file it will patch, with verified contents, owner, group, DACL, inheritance protection, and last-write time. It prepares and locks every changed file before writing any of them. A write failure attempts to restore the original bytes. Existing backups are never overwritten and are used as the patch base, so a newer build can finish a patch that an earlier build left partially applied. Re-running `/cishim` recognizes existing patches. `/restore` puts the retained originals back; see [Restore the retained originals](#restore-the-retained-originals).
 
 The patch changes a signed system binary; it does not regenerate Microsoft's signature or configure Secure Boot, HVCI, BCD, or the selected boot manager. The target boot chain must accept the modified file. Verification with the supplied preview files checks structural matching, patch bytes, checksum, repeat behavior, permissions, and file scope. Booting an expired preview and confirming MMC/Defender behavior still requires testing in that target system; stock release CI is not evidence of preview-expiry removal.
 
@@ -61,14 +112,93 @@ bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {default} nointegritychecks on
 nttimebomb.cmd /cishim W:\
 ~~~
 
-The loader backup is `Windows\System32\winload.efi.nttp-original`. The BCD commands
+The loader backup is `Windows\System32\winload.efi.bak`. The BCD commands
 apply to the selected Windows entry. Recovery can remain enabled. If boot fails, restore the snapshot or use
-WinPE to restore both `.nttp-original` files and the original BCD setting. If
+WinPE to run `nttimebomb.cmd /restore W:\` and remove the original BCD setting. If
 `nointegritychecks` was absent before the test, remove it with
 `bcdedit /store S:\EFI\Microsoft\Boot\BCD /deletevalue {default} nointegritychecks`.
 `check-boot` can inspect loaders and a supplied EFI System Partition without writing.
 
-## MMC certificate-expiry repair
+## UIACCESS programs that will not start
+
+`osk.exe`, `Narrator.exe` and `Magnify.exe` fail on an expired preview build with a
+plain error dialog carrying `ERROR_DS_REFERRAL` (8235), not a UAC prompt. Measured on
+21390, four different repairs do not help: a locally signed `wintrust.dll`/`crypt32.dll`,
+a manifest without `uiAccess`, a patched `consent.exe` and AppInfo auto-approval
+entries. Disabling the LUA subsystem is what makes them start:
+
+~~~bat
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" ^
+        /v EnableLUA /t REG_DWORD /d 0 /f
+:: restart
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" ^
+        /v EnableLUA /t REG_DWORD /d 1 /f
+~~~
+
+Lowering the UAC slider is not enough: `EnableLUA` has to be `0`, which removes the
+filtered token, the consent prompt and the uiAccess token request altogether. The
+costs are real: no UAC prompt at all, every process gets the full administrator
+token, and Store/UWP applications stop starting. The package therefore does not
+automate it.
+
+Windows Defender's service (`WinDefend`) is a separate problem: it starts and then
+terminates (event 7034) with an empty own log, which is the platform refusing to run
+on this build. No repair is offered.
+
+## Release loader patch for a dual-boot system
+
+A release Windows installation keeps a loader of its own: `\EFI\Microsoft\Boot\winload.efi`
+on the EFI System Partition, or `\Windows\System32\winload.exe` for a BIOS start. A
+dual-boot entry that starts the modified image through those files fails, because the
+release loader applies the same expired-image gates as the preview loader.
+
+~~~bat
+nttimebomb.cmd /winload-modify S:\
+nttimebomb.cmd /winload-modify S:\ C:\
+~~~
+
+The first form services `EFI\Microsoft\Boot\winload.efi` and `winresume.efi` on the
+supplied partition and stops if that partition holds no EFI loader. The optional
+second path also services `bootmgr`, `Boot\winload.exe`, `Boot\winresume.exe` and
+`Windows\System32\winload.exe|winresume.exe` for legacy boot. The rules are the same
+structural matchers as `/cishim-boot`, so an unsupported file is reported and skipped
+rather than guessed, and a changed EFI loader is written before the legacy volume is
+examined.
+
+## Restore the retained originals
+
+Every mode keeps a verified copy of the original beside the file it changes.
+
+~~~bat
+nttimebomb.cmd /restore D:\Mount
+nttimebomb.cmd /restore D:\Mount\Windows\System32\ci.dll
+~~~
+
+`/cishim-restore`, `/cishim-boot-restore` and
+`/winload-modify-restore` select which set to clear on the supplied root, folder, or
+single file: `/cishim-restore` restores `ci.dll` together with all four loaders,
+`/cishim-boot-restore` and `/winload-modify-restore` restore the loaders only, and
+`/restore` clears every retained original. Restore writes the retained bytes back,
+re-applies the retained owner, DACL and attributes, verifies the result, and removes
+that backup. A file that already matches its retained original is reported and left
+alone, and a file without a backup is not touched. Packages before this one used the
+suffix `.nttp-original`; that name is still read. Restore needs an elevated or SYSTEM
+prompt to re-apply ACLs on protected system files; without those rights it restores
+the contents and says that the permissions were left as they are.
+
+Restore is also the recovery path for a partially applied patch: the retained
+original is the base for every write, so a newer build finishes a file that an older
+build patched only in part. A file that matches neither its retained original nor the
+result of the current rule set is refused with a message, and the backup is kept.
+
+## MMC certificate-expiry repair (deprecated)
+
+`/mmc` and `/mmc-approval` are deprecated and will be removed in the next release.
+They were written for an expired-certificate failure of `mmc.exe` and AppInfo; the
+programs that could not start are a LUA problem, solved by `EnableLUA=0` (see the
+UIACCESS section). The modes still work but print a deprecation notice, and the
+AppInfo auto-approval entries for `osk.exe`, `Narrator.exe` and `Magnify.exe` have
+been withdrawn.
 
 Use both steps on a test installation whose original MMC is blocked by an
 expired catalog signature. The two commands cover the MMC publisher check and
@@ -328,7 +458,7 @@ nttimebomb.cmd /nt6 /file D:\Donor /target D:\Mount
 
 The same automatic detection applies to /media ... /nt6 D:\Donor in every install.wim index. Tokens and Branding are staged together, so a failure in either tree triggers rollback of both files and permissions.
 
-Below Build 15058, NT6 mode does not replace SPP binaries, CatRoot, the store database, or SysWOW64. It does not patch CI, boot managers, loaders, or kernels, and does not rename LicensingUI. Supply tokens appropriate for your target. Files are staged and verified before publication. On failure the tool attempts to restore original files and directory permissions. For a detected Build 15058 or newer, the normal newer-image policy applies instead: rename LicensingUI, skip tokens/Branding replacement, and suggest explicit /cishim.
+Below Build 15063, NT6 mode does not replace SPP binaries, CatRoot, the store database, or SysWOW64. It does not patch CI, boot managers, loaders, or kernels, and does not rename LicensingUI. Supply tokens appropriate for your target. Files are staged and verified before publication. On failure the tool attempts to restore original files and directory permissions. For a detected Build 15063 or newer the mode refuses to run at all: nothing is changed and the tool asks for /cishim (CI) and /slshim (licensing) instead.
 
 ## Complete installation media to a new ISO
 
@@ -348,7 +478,7 @@ nttimebomb.cmd /media D:\Preview.iso /work D:\SPP-Work /out D:\Preview-spp.iso /
 nttimebomb.cmd /media D:\Preview.iso /work D:\Tokens-Work /out D:\Preview-tokens.iso /nt6 D:\Donor\spp /oscdimg C:\Tools\oscdimg.exe /7zip C:\Tools\7z.exe
 ~~~
 
-Both combinations service every install.wim index and rebuild the ISO. Below Build 15058, /spponly uses standard SPP replacement, including its SysWOW64 handling, CatRoot rules and exclusions; /nt6 copies System32 SPP tokens with SPPSVC access and automatically applies optional Branding with TrustedInstaller access. Both preserve boot.wim, root boot managers, CI, loaders, and kernels. Build 15058 and newer indexes only have LicensingUI renamed and receive a /cishim suggestion; replacement is skipped in those indexes. The original /media /spp combination still performs the full older boot-patching workflow.
+Both combinations service every install.wim index and rebuild the ISO. Below Build 15063, /spponly uses standard SPP replacement, including its SysWOW64 handling, CatRoot rules and exclusions; /nt6 copies System32 SPP tokens with SPPSVC access and automatically applies optional Branding with TrustedInstaller access. Both preserve boot.wim, root boot managers, CI, loaders, and kernels. Build 15063 and newer indexes are refused without any change and the tool points at /cishim and /slshim. The original /media /spp combination still performs the full older boot-patching workflow.
 
 The tool performs the following operations.
 
@@ -416,9 +546,9 @@ Add /recovery R:\ when the target WinRE is on a separate recovery volume. Main-s
 
 For complete installation media and all install.wim editions, use /media with /spp and an appropriate donor. That combination performs the full older boot-patching workflow. The /media /spponly and /media /nt6 combinations perform replacement-only experiments instead.
 
-### Build 15058 and newer
+### Build 15063 and newer
 
-For normal /image, /spponly, /spp, /spp-reference, /nt6, /bootwim, and /media image processing, Build 15058 or newer uses a separate policy. Only Windows\System32\LicensingUI.exe is renamed to LicensingUI.exe.bak, when present. Existing backups are preserved. SPP replacement and legacy boot patches are skipped, and the tool prompts you to run nttimebomb /cishim OFFLINE_ROOT explicitly on a mounted or deployed Windows image. Newer media-root boot managers are retained. The watermark remains. /cishim operates independently of the build boundary; restore and read-only commands retain their existing scope.
+For normal /image, /spponly, /spp, /spp-reference, /nt6, /bootwim and /media image processing the legacy FlightSigned work applies to Build 15063 and older only. On Build 15063 or newer the mode makes no change at all, not even renaming LicensingUI.exe, and tells you to run nttimebomb /cishim OFFLINE_ROOT for the CI restrictions and nttimebomb /slshim OFFLINE_WINDOWS_ROOT for the licensing side. /cishim and /slshim have no build boundary; restore and read-only commands retain their existing scope.
 
 For example, with a manually mounted newer preview:
 
@@ -444,9 +574,9 @@ SPP files receive TrustedInstaller ownership, with the existing sppsvc access ru
 
 Standard migration skips sppnp.dll, sppinst.dll, sppcomapi.dll, sppcommdlg.dll, and csvlk-pack-Volume-CSVLK-{2,3,4}-ul-store-rtm.xrm-ms under spp\tokens\skus\csvlk-pack. NT6 mode copies its supplied tokens independently of these exclusions.
 
-### SPP-only replacement below Build 15058
+### SPP-only replacement below Build 15063
 
-Use /spponly when you want only the standard SPP replacement described above on an image below Build 15058. /spp identifies your donor; the value after /spponly identifies the offline Windows root or input WIM. A donor is required below that boundary. The equivalent /image ROOT /spponly form is also accepted. On Build 15058 or newer, this mode follows the LicensingUI rename and /cishim suggestion policy instead of replacing SPP.
+Use /spponly when you want only the standard SPP replacement described above on an image below Build 15063. /spp identifies your donor; the value after /spponly identifies the offline Windows root or input WIM. A donor is required below that boundary. The equivalent /image ROOT /spponly form is also accepted. On Build 15063 or newer this mode refuses without changing anything and points at /cishim and /slshim.
 
 ~~~bat
 nttimebomb.cmd /spponly D:\Mount /spp D:\RTM-SPP
@@ -455,7 +585,7 @@ nttimebomb.cmd /spponly D:\install.wim /out D:\install-spp.wim /index all /spp D
 nttimebomb.cmd /spponly D:\install.wim /out D:\edition-spp.wim /index 2 /spp D:\RTM-SPP
 ~~~
 
-Below Build 15058, these commands replace the supplied native SPP files, optional SysWOW64 SPP files, the spp tree, and selected CatRoot files with the same exclusions, permissions, and catalog-retirement rules as standard SPP mode. They preserve boot files, CI, kernels, hvloader, WinRE, and LicensingUI.exe. When you supply an already mounted directory, commit it yourself afterward. When you supply a WIM, the tool stages a private copy and publishes /out only after all selected indexes succeed. The policy is evaluated separately for each index. Omit /index to select index 1.
+Below Build 15063, these commands replace the supplied native SPP files, optional SysWOW64 SPP files, the spp tree, and selected CatRoot files with the same exclusions, permissions, and catalog-retirement rules as standard SPP mode. They preserve boot files, CI, kernels, hvloader, WinRE, and LicensingUI.exe. When you supply an already mounted directory, commit it yourself afterward. When you supply a WIM, the tool stages a private copy and publishes /out only after all selected indexes succeed. The policy is evaluated separately for each index. Omit /index to select index 1.
 
 For an installation ISO, the syntax is different: /media identifies the source, and the folder immediately after /spponly is the donor.
 
@@ -502,6 +632,10 @@ Native/x86 architecture checks, the SPP exclusions listed above, permission hand
 
 /spp-reference copies selected differing components and static licenses from a reference image of the same build, architecture, and edition. It preserves CatRoot and the activation store. /spp-restore restores the corresponding scope from an original image. Target-only files remain. Add /file to restore a single original file to an image-relative path.
 
+For a mounted original image, pass its mount root as the donor. The tool finds
+`Windows\System32` and the applicable `Windows\SysWOW64` files directly, so no
+manual extraction is needed for this restore. Use a separate target mount.
+
 ~~~bat
 nttimebomb.cmd /spp-reference D:\Reference /target D:\Mount
 nttimebomb.cmd /spp-restore D:\Original /target D:\Mount
@@ -542,7 +676,7 @@ PowerShell users must quote identifiers such as '{default}'. Secure Boot must pe
 
 ## Build from source
 
-Use Zig 0.15.2 and Python 3 from the repository root. Python is needed only to
+Use Zig 0.15.2 or newer (verified with 0.17.1) and Python 3 from the repository root. Python is needed only to
 build the SLShim payloads, not to run the packaged tool. Fetch the pinned
 Microsoft libraries, build the payloads and generated fingerprints, then compile
 the main executables and MMC helpers for each architecture. Rebuild the main
@@ -554,13 +688,13 @@ DISM, 7-Zip, or OSCDIMG.
 python tools/fetch-offreg.py
 python tools/build-slshim.py C:\Tools\zig\zig.exe
 zig rc /fo as-invoker.res -- src/flightpatch.rc
-zig cc -target x86-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -o nttimebomb-x86.exe
-zig cc -target x86_64-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -o nttimebomb-x64.exe
-zig cc -target aarch64-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -o nttimebomb-arm64.exe
+zig cc -target x86-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -lcrypt32 -lncrypt -o nttimebomb-x86.exe
+zig cc -target x86_64-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -lcrypt32 -lncrypt -o nttimebomb-x64.exe
+zig cc -target aarch64-windows-gnu -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -lcrypt32 -lncrypt -o nttimebomb-arm64.exe
 zig cc -target x86-windows-gnu -municode -std=c11 -Oz -s src/mmc.c as-invoker.res -ladvapi32 -lbcrypt -lwintrust -lcrypt32 -lncrypt -o nttimebomb-mmc-x86.exe
 zig cc -target x86_64-windows-gnu -municode -std=c11 -Oz -s src/mmc.c as-invoker.res -ladvapi32 -lbcrypt -lwintrust -lcrypt32 -lncrypt -o nttimebomb-mmc-x64.exe
 zig cc -target aarch64-windows-gnu -municode -std=c11 -Oz -s src/mmc.c as-invoker.res -ladvapi32 -lbcrypt -lwintrust -lcrypt32 -lncrypt -o nttimebomb-mmc-arm64.exe
-python tools/package.py D:\Output\nt-timebomb-patch-v5.2.1-winpe.zip
+python tools/package.py D:\Output\nt-timebomb-patch-v5.3.0-winpe.zip
 ~~~
 
 Maintainers extending the interface profiles can run
@@ -577,3 +711,4 @@ enumerate the committed profiles automatically. Rebuild payloads and both
 executables afterward.
 
 Exit codes are 0 for success, 1 for operation failure, 2 for invalid arguments, and 3 for missing required privileges. Preserve any reported remaining mount or backup paths when reporting a failure.
+

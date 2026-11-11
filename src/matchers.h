@@ -1,4 +1,4 @@
-/* Structural matchers for early Flightsigned x86 and AMD64 images. */
+﻿/* Structural matchers for early Flightsigned x86 and AMD64 images. */
 typedef struct {
     BYTE *bytes;
     DWORD size;
@@ -679,3 +679,164 @@ static BOOL plan_kernel(const Image *im, Plan *plan)
     }
     return stores == 2;
 }
+
+/* ---- Named PE lookups (exports and imports) ----
+   These let a matcher anchor on the documented name of a routine or of a
+   routine it calls, then validate the surrounding byte pattern. */
+
+static uint64_t u64(const void *data)
+{
+    uint64_t value;
+    memcpy(&value, data, sizeof value);
+    return value;
+}
+
+static DWORD pe_directory(const Image *im, unsigned index)
+{
+    DWORD header = im->pe + 24, optional = im->x64 ? 0x70 : 0x60;
+    if (u32(im->bytes + header + (im->x64 ? 0x6C : 0x5C)) <= index ||
+        header + optional + (index + 1) * 8 > im->section_table)
+        return NONE;
+    return header + optional + index * 8;
+}
+
+/* Exact, case-sensitive export name lookup. Forwarded exports and absent names
+   both return NONE. A duplicate name resolving to different bodies is refused. */
+static DWORD pe_export(const Image *im, const char *name)
+{
+    DWORD directory = pe_directory(im, IMAGE_DIRECTORY_ENTRY_EXPORT);
+    if (directory == NONE)
+        return NONE;
+    DWORD start = translate(im, u32(im->bytes + directory), FALSE, FALSE);
+    DWORD size = u32(im->bytes + directory + 4);
+    if (start == NONE || size < 40 || size > im->size - start)
+        return NONE;
+    const BYTE *entry = im->bytes + start;
+    DWORD functions = u32(entry + 20), names = u32(entry + 24);
+    DWORD ft = translate(im, u32(entry + 28), FALSE, FALSE);
+    DWORD nt = translate(im, u32(entry + 32), FALSE, FALSE);
+    DWORD ot = translate(im, u32(entry + 36), FALSE, FALSE);
+    size_t length = strlen(name) + 1;
+    if (ft == NONE || nt == NONE || ot == NONE || !names || names > 8192 ||
+        functions > (im->size - ft) / 4 || names > (im->size - nt) / 4 || names > (im->size - ot) / 2)
+        return NONE;
+    DWORD found = NONE;
+    for (DWORD i = 0; i < names; ++i) {
+        DWORD text = translate(im, u32(im->bytes + nt + i * 4), FALSE, FALSE);
+        WORD ordinal = u16(im->bytes + ot + i * 2);
+        if (text == NONE || length > im->size - text || memcmp(im->bytes + text, name, length) ||
+            ordinal >= functions)
+            continue;
+        DWORD body = translate(im, u32(im->bytes + ft + ordinal * 4), FALSE, TRUE);
+        if (found != NONE && found != body)
+            return NONE;
+        found = body;
+    }
+    return found;
+}
+
+static BOOL pe_name_at(const Image *im, DWORD address, const char *text)
+{
+    DWORD raw = translate(im, address, FALSE, FALSE);
+    if (raw == NONE)
+        return FALSE;
+    size_t i = 0;
+    for (; text[i]; ++i) {
+        if (raw + i >= im->size)
+            return FALSE;
+        BYTE value = im->bytes[raw + i];
+        BYTE want = (BYTE)text[i];
+        if (value >= 'A' && value <= 'Z')
+            value = (BYTE)(value + 32);
+        if (want >= 'A' && want <= 'Z')
+            want = (BYTE)(want + 32);
+        if (value != want)
+            return FALSE;
+    }
+    return raw + i < im->size && !im->bytes[raw + i];
+}
+
+/* IAT slot of a named imported procedure. Handles both the regular import
+   descriptor table and the delay-load descriptor table. */
+static DWORD pe_import_slot(const Image *im, const char *dll, const char *name)
+{
+    unsigned width = im->x64 ? 8 : 4;
+    DWORD found = NONE;
+    for (unsigned delay = 0; delay < 2; ++delay) {
+        DWORD directory = pe_directory(im, delay ? IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT :
+                                                  IMAGE_DIRECTORY_ENTRY_IMPORT);
+        if (directory == NONE)
+            continue;   /* a module may have only one of the two tables */
+        DWORD entry = u32(im->bytes + directory), size = u32(im->bytes + directory + 4);
+        DWORD raw = entry ? translate(im, entry, FALSE, FALSE) : NONE;
+        unsigned stride = delay ? 32 : 20;
+        if (raw == NONE || size < stride)
+            continue;
+        for (unsigned i = 0; i < 512 && raw + (i + 1) * stride <= im->size; ++i) {
+            const BYTE *descriptor = im->bytes + raw + i * stride;
+            DWORD module, names, iat;
+            if (delay) {
+                if (!(u32(descriptor) & 1))
+                    continue; /* Virtual-address descriptors are not used in practice. */
+                module = u32(descriptor + 4);
+                iat = u32(descriptor + 12);
+                names = u32(descriptor + 16);
+            } else {
+                module = u32(descriptor + 12);
+                iat = u32(descriptor + 16);
+                names = u32(descriptor);
+                if (!names)
+                    names = iat;
+            }
+            if (!module || !iat)
+                break;
+            if (!names || !pe_name_at(im, module, dll))
+                continue;
+            DWORD raw_names = translate(im, names, FALSE, FALSE);
+            if (raw_names == NONE)
+                continue;
+            for (unsigned t = 0; t < 8192; ++t) {
+                DWORD thunk = raw_names + t * width;
+                if (thunk + width > im->size)
+                    break;
+                uint64_t value = width == 8 ? u64(im->bytes + thunk) : u32(im->bytes + thunk);
+                if (!value)
+                    break;
+                if (value & (width == 8 ? (1ull << 63) : (1ull << 31)))
+                    continue; /* imported by ordinal */
+                if (value >= im->size || !pe_name_at(im, (DWORD)value + 2, name))
+                    continue;
+                DWORD slot = iat + t * width;
+                if (found != NONE && found != slot)
+                    return NONE;
+                found = slot;
+            }
+        }
+    }
+    return found;
+}
+
+/* Direct calls through one IAT slot. Sites are executable and identify exactly
+   one callee, so a caller count of one is a structural fact. */
+static unsigned pe_call_sites(const Image *im, DWORD slot, DWORD sites[8])
+{
+    unsigned count = 0;
+    for (DWORD o = 0; o + 6 <= im->size; ++o) {
+        if (im->bytes[o] != 0xff || im->bytes[o + 1] != 0x15 || !code_span(im, o, 6))
+            continue;
+        BOOL hit;
+        if (im->x64) {
+            int64_t target = (int64_t)translate(im, o, TRUE, TRUE) + 6 + (int32_t)u32(im->bytes + o + 2);
+            hit = target == (int64_t)slot;
+        } else {
+            hit = u32(im->bytes + o + 2) == u32(im->bytes + im->pe + 24 + 28) + slot;
+        }
+        if (!hit)
+            continue;
+        if (count == 8)
+            return 8;
+        sites[count++] = o;
+    }
+    return count;
+}
+

@@ -1,1 +1,25 @@
+#include "version.h"
+
 1 24 "flightpatch.manifest"
+
+1 VERSIONINFO
+FILEVERSION NTTP_VERSION_TUPLE
+PRODUCTVERSION NTTP_VERSION_TUPLE
+FILEOS 0x40004
+FILETYPE 1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "NT Timebomb Patch"
+            VALUE "FileVersion", NTTP_VERSION_TEXT
+            VALUE "ProductName", "NT Timebomb Patch"
+            VALUE "ProductVersion", NTTP_VERSION_TEXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
