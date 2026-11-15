@@ -645,10 +645,49 @@ static BOOL plan_ci_x86_preview(const Image *im, Plan *plan)
     return TRUE;
 }
 
+/* 32-bit previews from 10525 on keep a single expiry gate: one mov of
+   STATUS_IMAGE_CERT_EXPIRED (0xC0000605) guarded by a conditional jump that skips
+   the "expired" block. Making that jump unconditional is the published method for
+   this layout (BetaRookie, "how to remove the Flightsigned time bomb"), and it is
+   exactly one site per file. */
+static BOOL plan_ci_x86_gate(const Image *im, Plan *plan)
+{
+    if (im->x64 || im->machine == IMAGE_FILE_MACHINE_ARM64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    DWORD mov_at = NONE, branch = NONE;
+    unsigned movs = 0, branches = 0;
+    for (DWORD o = 0; o + 5 <= im->size; ++o) {
+        if (b[o] < 0xb8 || b[o] > 0xbf || u32(b + o + 1) != 0xc0000605u)
+            continue;
+        if (++movs > 1)
+            return FALSE;
+        mov_at = o;
+    }
+    if (mov_at == NONE)
+        return FALSE;
+    for (DWORD back = 2; back <= 26 && mov_at >= back; ++back) {
+        DWORD o = mov_at - back;
+        if (b[o] < 0x70 || b[o] > 0x7f)
+            continue;
+        DWORD target = (DWORD)(o + 2 + (int8_t)b[o + 1]);
+        if (target < mov_at || target > mov_at + 0x20)
+            continue;
+        if (++branches > 1)
+            return FALSE;
+        branch = o;
+    }
+    if (branches != 1 || !code_span(im, branch, 2))
+        return FALSE;
+    if (!record(im, plan, branch, "\xeb", 1, L"CI certificate expiry gate"))
+        return FALSE;
+    return TRUE;
+}
+
 static BOOL plan_ci(const Image *im, Plan *plan)
 {
     /* 32-bit previews: the expiry callback with its three edits. */
-    if (!im->x64 && plan_ci_x86_preview(im, plan))
+    if (!im->x64 && (plan_ci_x86_preview(im, plan) || plan_ci_x86_gate(im, plan)))
         return TRUE;
     const BYTE *b = im->bytes;
     unsigned sites = 0;
