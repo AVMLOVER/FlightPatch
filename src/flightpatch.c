@@ -701,6 +701,12 @@ static int help(void)
             L"Provide OSCDIMG and (for ISO input) 7-Zip beside the executable, in PATH, or explicitly.\n"
             L"The new workspace remains available for inspection or manual cleanup after any result.\n\n"
             L"TWO STANDALONE BOOT MANAGERS\n"
+            L"BOOT MANAGERS\n"
+            L"  nttimebomb /bootmgr FOLDER\n"
+            L"  nttimebomb /bootmgr bootmgr bootmgr.efi\n"
+            L"Patches the pair in place: bootmgr.efi through the PE rules and the BIOS\n"
+            L"bootmgr by unpacking its compressed Boot Manager payload, patching it and\n"
+            L"rebuilding the container. FILE.bak keeps each original.\n\n"
             L"  nttimebomb /bootfiles INPUT_FOLDER /out NEW_FOLDER\n"
             L"Place bootmgr and bootmgr.efi together in INPUT_FOLDER. Both are verified before\n"
             L"the patched pair is written to a new folder. Deploy them to the matching media.\n\n"
@@ -724,6 +730,102 @@ static int help(void)
             L"retain their scope. Read README.md for donor\n"
             L"layouts, SPP exclusions, restore examples, boot diagnostics, and known limitations.\n");
     return 0;
+}
+
+/* /bootmgr - patch the two boot managers in place.
+
+   bootmgr.efi is a PE image; the BIOS bootmgr is a 16-bit stub with a compressed
+   Boot Manager payload, which patch_legacy() unpacks, patches through the same PE
+   rules and rebuilds. Both keep a FILE.bak next to them. */
+static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role)
+{
+    HANDLE file = spp_open(path, GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER, OPEN_EXISTING);
+    if (file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED)
+        file = spp_open(path, GENERIC_READ | GENERIC_WRITE, OPEN_EXISTING);
+    if (file == INVALID_HANDLE_VALUE) {
+        ci_io_error(L"open", path, GetLastError());
+        return FALSE;
+    }
+    FILETIME created = {0}, accessed = {0}, written = {0};
+    GetFileTime(file, &created, &accessed, &written);
+    Output content = {0};
+    BOOL ok = offline_read(file, &content, algorithm);
+    if (ok) {
+        if (role == LEGACY) {
+            ok = patch_legacy(&content) && digest(algorithm, content.data, content.size, content.sha);
+        } else {
+            WORD machine = 0;
+            BOOL changed = FALSE;
+            ok = patch_pe(content.data, content.size, role, &machine, &changed);
+            if (ok)
+                ok = digest(algorithm, content.data, content.size, content.sha);
+        }
+    }
+    if (ok) {
+        LARGE_INTEGER start = {0}, end = {.QuadPart = content.size};
+        ok = SetFilePointerEx(file, start, NULL, FILE_BEGIN) &&
+             write_verified(file, &content, algorithm) &&
+             SetFilePointerEx(file, end, NULL, FILE_BEGIN) && SetEndOfFile(file) && FlushFileBuffers(file);
+    }
+    if (file != INVALID_HANDLE_VALUE)
+        CloseHandle(file);
+    free(content.data);
+    if (!ok) {
+        fwprintf(stderr, L"%ls: the patch could not be verified, keep the FILE.bak copy.\n", path);
+        return FALSE;
+    }
+    patch_keep_times(path, &created, &accessed, &written);
+    return TRUE;
+}
+
+static int run_bootmgr(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
+{
+    wchar_t first[PATH_SIZE], second[PATH_SIZE];
+    BOOL ok = TRUE;
+    if (argc == 3) {
+        /* a folder that contains both */
+        wchar_t folder[PATH_SIZE];
+        if (!normalize(folder, argv[2]) ||
+            !build_path(first, folder, L"bootmgr") || !build_path(second, folder, L"bootmgr.efi")) {
+            fwprintf(stderr, L"Usage: nttimebomb /bootmgr FOLDER | bootmgr bootmgr.efi\n");
+            return 2;
+        }
+    } else if (argc == 4) {
+        if (!normalize(first, argv[2]) || !normalize(second, argv[3])) {
+            fwprintf(stderr, L"Usage: nttimebomb /bootmgr FOLDER | bootmgr bootmgr.efi\n");
+            return 2;
+        }
+    } else {
+        fwprintf(stderr, L"Usage: nttimebomb /bootmgr FOLDER | bootmgr bootmgr.efi\n");
+        return 2;
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        const wchar_t *path = i == 0 ? first : second;
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+            fwprintf(stderr, L"Missing %ls.\n", path);
+            ok = FALSE;
+            continue;
+        }
+        wchar_t backup[PATH_SIZE];
+        if (swprintf(backup, PATH_SIZE, L"%ls.bak", path) > 0 &&
+            GetFileAttributesW(backup) == INVALID_FILE_ATTRIBUTES) {
+            HANDLE in = spp_open(path, GENERIC_READ, OPEN_EXISTING);
+            HANDLE out = CreateFileW(backup, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                                     FILE_ATTRIBUTE_NORMAL, NULL);
+            BOOL copied = in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE &&
+                          spp_copy_verified(in, out) && FlushFileBuffers(out);
+            if (in != INVALID_HANDLE_VALUE)
+                CloseHandle(in);
+            if (out != INVALID_HANDLE_VALUE)
+                CloseHandle(out);
+            if (!copied)
+                fwprintf(stderr, L"Cannot retain %ls.\n", backup);
+        }
+        wprintf(L"%ls\n", path);
+        if (!bootmgr_patch(algorithm, path, i == 0 ? LEGACY : BOOT))
+            ok = FALSE;
+    }
+    return ok ? 0 : 1;
 }
 
 static int run_ci(int argc, wchar_t **argv)
@@ -1179,6 +1281,14 @@ int wmain(int argc, wchar_t **argv)
         return run_winload(argc, argv);
     if (argc >= 2 && (!_wcsicmp(argv[1], L"/bcd") || !_wcsicmp(argv[1], L"/bcd-show")))
         return run_bcd(argc, argv);
+    if (argc >= 2 && !_wcsicmp(argv[1], L"/bootmgr")) {
+        BCRYPT_ALG_HANDLE algorithm;
+        if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
+            return 1;
+        int result = run_bootmgr(algorithm, argc, argv);
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        return result;
+    }
     if (argc >= 2 && !_wcsicmp(argv[1], L"/bcd-template")) {
         if (argc != 3) {
             fwprintf(stderr, L"Usage: nttimebomb /bcd-template OFFLINE_ROOT\n");

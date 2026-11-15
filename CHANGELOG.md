@@ -1,4 +1,26 @@
-# 更新日志（NT Timebomb Patch 5.3.3）
+# 更新日志（NT Timebomb Patch 5.3.4）
+
+## 5.3.4 - 2026-11-15
+
+### 新增 `/bootmgr` 开关
+
+```bat
+nttimebomb /bootmgr FOLDER
+nttimebomb /bootmgr bootmgr bootmgr.efi
+```
+
+就地修补两个引导管理器，各留 `FILE.bak`：
+
+- **`bootmgr.efi`**：走 PE 规则，只改镜像哈希门与 catalog 门（10143 实测：15 字节，
+  含校验和）；
+- **`bootmgr`（BIOS）**：解包其 16 位 stub 里的压缩 Boot Manager，按同一套 PE 规则修改
+  内部镜像，再重建容器（沿用 `/bootfiles` 已在用的 `patch_legacy` 路径）。
+
+### 10143 x86 适配情况
+
+- `ci.dll`：属于**三处改点**布局，现有规则直接命中
+  （`0x18650` `7c→eb`、`0x1F84C` `75→eb`、`0x272BE` `01→00`），无需新增规则；
+- `bootmgr.efi` / `bootmgr`：`/bootmgr` 均识别并改写。
 
 ## 5.3.3 - 2026-11-15
 

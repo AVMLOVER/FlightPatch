@@ -18,6 +18,7 @@
 | `/bcd`、`/bcd-show` | 对离线 BCD 设置/查看 `nointegritychecks on` 与 `recoveryenabled No` |
 | `/bcd-template` | 对镜像内的 `config\BCD-Template` 写入同样两项，便于**封装镜像**时预置 |
 | `/image`、`/boot`、`/spp`、`/spponly`、`/nt6`、`/bootwim` | 早期 Win10（**Build < 15063**）FlightSigned 炸弹与 SPP/品牌信息的离线处理 |
+| `/bootmgr` | 就地修补 `bootmgr` 与 `bootmgr.efi`（BIOS 版会解包/重建压缩容器） |
 | `/media`、`/bootfiles` | 生成完整安装 ISO、单独修补两个引导管理器 |
 | `/disable-lua`、`/enable-lua` | 写 `EnableLUA`（0/1），在线或离线卷；三个 UIAccess 程序在 `0` 时才能启动 |
 | `/restore` 及各类 `-restore` | 用 `.bak` 回滚到原始文件 |
