@@ -167,7 +167,7 @@ static BOOL plan_ci_expiry(const Image *im, Plan *plan)
         return plan_ci(im, plan); /* Earlier FlightSigned CI layouts. */
     }
     if (!im->x64)
-        return FALSE; /* A preview x86 expiry callback needs its own verified ABI. */
+        return FALSE; /* The 32-bit preview layout is handled by plan_ci. */
     DWORD path_rva = translate(im, literal, TRUE, FALSE), function = NONE, function_end = 0;
     unsigned references_found = 0;
     for (DWORD o = 0; o + 7 <= im->size; ++o) {

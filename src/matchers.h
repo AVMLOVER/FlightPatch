@@ -582,8 +582,74 @@ static BOOL plan_umci(const Image *im, Plan *plan)
     return TRUE;
 }
 
+/* 32-bit preview CI (9841 and close builds). The expiry callback compares the
+   certificate FILETIME and sets STATUS_FLIGHTING_DISABLED; the reference patch of
+   this layout makes three changes:
+
+     - the "signed before the certificate start" branch becomes unconditional;
+     - the branch that keeps the flighting status becomes unconditional;
+     - the byte that records "expired" is cleared instead of set.
+
+   Each site is anchored on its surrounding bytes, so a layout that does not match
+   all three is refused rather than half patched. */
+static BOOL plan_ci_x86_preview(const Image *im, Plan *plan)
+{
+    if (im->x64 || im->machine == IMAGE_FILE_MACHINE_ARM64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    DWORD first = NONE, second = NONE, third = NONE;
+    unsigned firsts = 0, seconds = 0, thirds = 0;
+    for (DWORD o = 0; o + 16 <= im->size; ++o) {
+        /* mov eax,[ebp-x] ; cmp ...,[esi+0c] ; jl ; jg ... */
+        if (b[o] == 0x8b && b[o + 1] == 0x45 && b[o + 3] == 0x3b && b[o + 4] == 0x46 &&
+            b[o + 5] == 0x0c && (b[o + 6] == 0x7c || b[o + 6] == 0xeb) &&
+            at(im, o + 8, "\x7f\x08\x8b\x45", "xxxx")) {
+            if (++firsts > 1)
+                return FALSE;
+            first = o + 6;
+        }
+        /* test byte ptr [addr],1 ; jne <any> ; test byte ptr [ebp+8],10h */
+        if (b[o] == 0xf6 && b[o + 1] == 0x05 && b[o + 6] == 0x01 &&
+            (b[o + 7] == 0x75 || b[o + 7] == 0xeb) &&
+            at(im, o + 9, "\xf6\x45\x08\x10", "xxxx")) {
+            if (++seconds > 1)
+                return FALSE;
+            second = o + 7;
+        }
+        /* jbe +2 ; mov r8,1 - the byte that records "expired". The build after 9926
+           uses bh instead of bl, so any low register is accepted; the pair is unique
+           in every build that carries it. */
+        if (b[o] == 0x76 && b[o + 1] == 0x02 && b[o + 2] >= 0xb0 && b[o + 2] <= 0xb7 &&
+            (b[o + 3] == 0x01 || b[o + 3] == 0x00)) {
+            if (++thirds > 1)
+                return FALSE;
+            third = o + 3;
+        }
+    }
+    if (firsts != 1 || seconds != 1 || thirds != 1)
+        return FALSE;
+    if (!record(im, plan, first, "\xeb", 1, L"CI certificate start branch") ||
+        !record(im, plan, second, "\xeb", 1, L"CI flighting status branch") ||
+        !record(im, plan, third, "\x00", 1, L"CI expired flag"))
+        return FALSE;
+    /* The reference patch of this layout carries exactly these three changes; the
+       UMCI policy edit belongs to the later layouts and is optional here. */
+    Plan umci = {0};
+    if (plan_umci(im, &umci)) {
+        for (unsigned i = 0; i < umci.count; ++i) {
+            if (plan->count == MAX_EDITS)
+                return FALSE;
+            plan->edits[plan->count++] = umci.edits[i];
+        }
+    }
+    return TRUE;
+}
+
 static BOOL plan_ci(const Image *im, Plan *plan)
 {
+    /* 32-bit previews: the expiry callback with its three edits. */
+    if (!im->x64 && plan_ci_x86_preview(im, plan))
+        return TRUE;
     const BYTE *b = im->bytes;
     unsigned sites = 0;
     for (DWORD p = 24; p + 13 < im->size; ++p) {
