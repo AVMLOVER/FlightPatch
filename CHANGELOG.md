@@ -1,4 +1,31 @@
-# 更新日志（NT Timebomb Patch 5.3.0）
+# 更新日志（NT Timebomb Patch 5.3.1）
+
+## 5.3.1 - 2026-11-15
+
+### 新增开关
+
+- **`/disable-lua`、`/enable-lua`**：写 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System` 的
+  `EnableLUA`（0 / 1）。
+  - 不带路径：修改**正在运行**的系统（需提权）；
+  - 带 `OFFLINE_ROOT`：修改该卷的 `Windows\System32\config\SOFTWARE`，沿用证书库那套
+    offreg 写入与"旧 hive 备份 + 分块覆盖"流程；
+  - 改动需重启生效。三个 UIAccess 程序正是在 `EnableLUA=0` 时才能启动。
+
+### 结构适配
+
+- **`/image` 对 9833 / 9860 的 loader 适配**：`plan_boot_options` 原来写死
+  `mov rcx, rbp` + 四字节 `cmovs ecx, r14d`，这两个 build 用的是
+  `mov rcx, rsi` + 三字节 `cmovs ecx, ebp`，且第二条选项常量的距离不同。现改为：
+  按 `mov rcx, reg` + `call` + `movzx ecx,[rsp+40]` + `test eax,eax` 定位，
+  接受 3/4 字节两种 `cmovs` 编码与已打补丁的形式，并在后随窗口内查找
+  `mov edx, 0x16000049`。补丁写成 `b1 01`（+ NOP 对齐）。
+- 实测（原文件与补丁后逐字节对比）：
+  - 9833 x64：`winload.efi`、`winload.exe`、`winresume.efi`、`winresume.exe` 各 3 处
+    （镜像哈希门 6×NOP、catalog 门 6×NOP、loader integrity option `0f 48 cd → b1 01 90`），
+    `ci.dll` 两处证书日期分支 `7e/74 → eb`；
+  - 9860 x64：同样全部识别并改写；`winresume.*` 使用"alternate image status"分支。
+  - **9833/9860 的 x86 版 `ci.dll` 仍未适配**：代码里对"带 `\SystemRoot\System32\ci.dll`
+    字面量的 32 位预览 CI"明确拒绝（需要单独验证其 ABI），本轮未实现。
 
 ## 5.3.0 - 2026-11-12
 

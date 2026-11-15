@@ -460,6 +460,7 @@ static unsigned image_build(const wchar_t *root, BOOL boot_wim)
 #include "wintrust_status.h"
 #include "uiaccess.h"
 #include "uac.h"
+#include "lua.h"
 #include "mmc_approval.h"
 
 static void suggest_ci(void)
@@ -624,6 +625,14 @@ static int help(void)
             L"Without a path, or with the running installation, AppInfo is in use: the replacement is\n"
             L"staged, applied at the next start, and keeps the original timestamps. A path on\n"
             L"another volume is edited in place. Unknown layouts are rejected.\n\n"
+            L"LUA SWITCH\n"
+            L"  nttimebomb /disable-lua [OFFLINE_ROOT]\n"
+            L"  nttimebomb /enable-lua [OFFLINE_ROOT]\n"
+            L"Writes EnableLUA in Microsoft\\Windows\\CurrentVersion\\Policies\\System: 0 for\n"
+            L"/disable-lua and 1 for /enable-lua. Without a path the running installation is\n"
+            L"changed; with one, that volume's Windows\\System32\\config\\SOFTWARE hive is edited\n"
+            L"and the previous hive is kept as a backup. The uiAccess programs start with LUA off.\n"
+            L"A restart is required.\n\n"
             L"CI BUILD-EXPIRY PATCH\n"
             L"  nttimebomb /cishim OFFLINE_ROOT|FOLDER|FILE\n"
             L"Example: nttimebomb /cishim D:\\mount\n"
@@ -1146,7 +1155,9 @@ int wmain(int argc, wchar_t **argv)
     }
     if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc") || !_wcsicmp(argv[1], L"/mmc-restore")))
         return run_mmc(argc, argv);
-            if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc-approval") || !_wcsicmp(argv[1], L"/mmc-approval-restore")))
+            if (argc >= 2 && (!_wcsicmp(argv[1], L"/enable-lua") || !_wcsicmp(argv[1], L"/disable-lua")))
+        return run_lua(argc, argv);
+    if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc-approval") || !_wcsicmp(argv[1], L"/mmc-approval-restore")))
         return run_mmc_approval(argc, argv);
     if(argc>=2 && (!_wcsicmp(argv[1],L"/slshim") || !_wcsicmp(argv[1],L"/slshim-restore")))
         return run_slshim(argc,argv);

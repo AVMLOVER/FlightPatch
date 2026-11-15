@@ -19,6 +19,7 @@
 | `/bcd-template` | 对镜像内的 `config\BCD-Template` 写入同样两项，便于**封装镜像**时预置 |
 | `/image`、`/boot`、`/spp`、`/spponly`、`/nt6`、`/bootwim` | 早期 Win10（**Build < 15063**）FlightSigned 炸弹与 SPP/品牌信息的离线处理 |
 | `/media`、`/bootfiles` | 生成完整安装 ISO、单独修补两个引导管理器 |
+| `/disable-lua`、`/enable-lua` | 写 `EnableLUA`（0/1），在线或离线卷；三个 UIAccess 程序在 `0` 时才能启动 |
 | `/restore` 及各类 `-restore` | 用 `.bak` 回滚到原始文件 |
 
 ---
@@ -117,9 +118,13 @@ nttimebomb.cmd /cishim D:\Extracted\ci.dll
 把 **LUA 子系统整体关闭** 后全部正常：
 
 ```bat
-reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" ^
-        /v EnableLUA /t REG_DWORD /d 0 /f
-:: 重启
+:: 在线：直接改本机注册表（需提权）
+nttimebomb.cmd /disable-lua
+:: 离线卷：改该卷的 config\SOFTWARE（WinPE / SYSTEM）
+nttimebomb.cmd /disable-lua W:\
+:: 恢复 UAC
+nttimebomb.cmd /enable-lua
+:: 之后重启
 ```
 
 代价：不再有 UAC 提示、所有进程以完整管理员令牌运行、**Store/UWP 应用无法启动**。

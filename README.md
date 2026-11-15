@@ -1,7 +1,5 @@
 ﻿# NT Timebomb Patch 5.3.0
 
-Chinese documentation: [README.zh-CN.md](README.zh-CN.md).
-
 Run `nttimebomb.cmd /version` to identify the local build. The executable's
 Details tab also shows its file and product versions.
 

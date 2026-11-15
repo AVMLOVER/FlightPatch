@@ -277,6 +277,7 @@ static BOOL find_main_hash(const Image *im, DWORD oid, DWORD *hash, DWORD *filte
 
 static BOOL plan_boot_options(const Image *im, Plan *plan)
 {
+    const BYTE *bytes = im->bytes;
     unsigned count = 0;
     for (DWORD o = 0; o + 52 < im->size; ++o) {
         if (!at(im, o, "\xba\x48\x00\x00\x16", "xxxxx"))
@@ -285,14 +286,32 @@ static BOOL plan_boot_options(const Image *im, Plan *plan)
         const char *new_bytes;
         unsigned length;
         if (im->x64 &&
-            at(im, o + 5, "\x48\x8b\xcd\xe8\0\0\0\0\x0f\xb6\x4c\x24\x40\x85\xc0", "xxxx????xxxxxxx") &&
-            at(im, o + 24, "\x88\x4c\x24\x40\x88\x0e", "xxxxxx") &&
-            at(im, o + 40, "\xba\x49\x00\x00\x16", "xxxxx")) {
+            at(im, o + 5, "\x48\x8b", "xx") && bytes[o + 8] == 0xe8 &&
+            at(im, o + 13, "\x0f\xb6\x4c\x24\x40\x85\xc0", "xxxxxxx")) {
+            /* The status move that follows the test is either "cmovs ecx, reg32"
+               with a REX prefix (four bytes) or without one (three bytes), and an
+               already patched file carries the replacement instead. */
             patch = o + 20;
-            length = 4;
-            new_bytes = "\xb1\x01\x90\x90";
-            if (!at(im, patch, "\x41\x0f\x48\xce", "xxxx") &&
-                !at(im, patch, new_bytes, "xxxx"))
+            if (at(im, patch, "\x41\x0f\x48", "xxx")) {
+                length = 4;
+                new_bytes = "\xb1\x01\x90\x90";
+            } else if (at(im, patch, "\x0f\x48", "xx")) {
+                length = 3;
+                new_bytes = "\xb1\x01\x90";
+            } else if (at(im, patch, "\xb1\x01", "xx")) {
+                length = at(im, patch, "\xb1\x01\x90\x90", "xxxx") ? 4 : 3;
+                new_bytes = length == 4 ? "\xb1\x01\x90\x90" : "\xb1\x01\x90";
+            } else {
+                continue;
+            }
+            DWORD after = patch + length;
+            if (!at(im, after, "\x88\x4c\x24\x40", "xxxx"))
+                continue;
+            unsigned tail = 0;
+            while (tail < 24 && after + 4 + tail + 5 <= im->size &&
+                   !at(im, after + 4 + tail, "\xba\x49\x00\x00\x16", "xxxxx"))
+                ++tail;
+            if (tail >= 24)
                 continue;
         } else if (!im->x64 &&
                    at(im, o + 5, "\x50\x8b\xcf\xe8\0\0\0\0\x85\xc0", "xxxx????xx") &&
