@@ -176,7 +176,45 @@ nttimebomb.cmd /restore W:\
 规则按字节结构匹配并强制唯一命中，不识别就整体拒绝；9841 已与作者提供的修改版逐字节一致。
 结构与偏移详见 [X86-CI.md](X86-CI.md)。
 
-## 九、从源码构建
+## 九、用原版 PE 在当前日期启动（`/winpe`）
+
+Flightsigned 预览版 PE 过期后无法启动：引导管理器（以及光盘引导程序 cdboot）拒绝加载证书
+已过期的 `winload.efi`。`/winpe` **只改启动链、不动 boot.wim**（`boot.wim` 另外用
+`/bootwim` 或 `/image` 处理）。
+
+```bat
+:: PE 根目录 = ISO 解开的根（含 bootmgr.efi、boot\、efi\、sources\）
+nttimebomb.cmd /winpe D:\PE
+```
+
+处理范围：
+
+- **UEFI x64**：`bootmgr.efi`、`efi\boot\bootx64.efi`、`efi\microsoft\boot\bootmgfw.efi`（若存在）
+  —— 4 处外科手术改点（镜像状态门、js 形式、catalog 门、吊销结果）；
+- **UEFI x86**：`efi\boot\bootia32.efi` —— 1 处（`85 f6 79 xx f6 c3 20` → `79→eb`）；
+- **光盘引导程序**：`cdboot.efi`、`cdboot_noprompt.efi` —— 2 处 `jns→jmp`；
+- **El Torito 引导镜像**：`efi\microsoft\boot\efisys.bin`、`efisys_noprompt.bin` 内部那份
+  `BOOTX64.EFI`（就是 cdboot）原地改写，容器大小不变；
+- **Legacy**：`bootmgr`（解包压缩容器 → 改内部镜像 → 重建，实验性）；
+- **介质 BCD**：写 `hypervisorlaunchtype Off`（不足以解决 VMware panic，见下）。
+
+打包要求（实测）：
+
+- **必须用 `oscdimg` 打包**，并用 `-bootdata` 指定补丁后的 `efisys.bin`：
+  ```
+  oscdimg -m -o -u1 -udfver102 -j ^
+    -bootdata:2#p0,e,bD:\iso\boot\etfsboot.com#pEF,e,bD:\iso\efi\microsoft\boot\efisys.bin ^
+    D:\iso D:\out.iso
+  ```
+  UltraISO 重新封装会**沿用源 ISO 的引导镜像**，只替换目录树里的 `efisys.bin` 无效；
+- **关闭 Secure Boot**（补丁破坏签名）；
+- **VMware + Legacy**：BCD 的 `hypervisorlaunchtype Off` 不足以避免
+  `hypervMonitor_syn.c:940` panic，需要在虚拟机侧去掉 `.vmx` 里的 `vhv.enable`、
+  `hypervisor.cpuid.v0` 两行（或取消勾选 "Virtualize Intel VT-x/EPT or AMD-V/RVI"）。
+
+原理、偏移表与逐字节验证见 [WINPE.md](WINPE.md)。
+
+## 十、从源码构建
 
 需要 Zig（`zig cc` 即可，无需 MSVC）：
 
@@ -192,7 +230,7 @@ MMC 助手（`src/mmc.c`）额外链接 `-lwintrust`。`as-invoker.res` 是提�
 
 ---
 
-## 十、安全与风险提示
+## 十一、安全与风险提示
 
 - 本项目会修改系统二进制与引导配置，**务必在虚拟机或可回滚的环境中先验证**；
 - 关闭 Secure Boot、关闭 `EnableLUA`、绕过 CI 校验都会降低系统安全性；
