@@ -732,7 +732,7 @@ static int help(void)
     return 0;
 }
 
-static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role);
+static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role, BOOL manager_rule);
 
 /* /winpe - patch the boot chain of a WinPE media tree so the unmodified boot.wim
    starts at the current date.
@@ -752,6 +752,139 @@ static const wchar_t *const winpe_files[] = {
     L"efi\\microsoft\\boot\\memtest.efi",
     L"boot\\memtest.exe"
 };
+
+/* The UEFI firmware of a CD runs the El Torito image efi\\microsoft\\boot\\efisys.bin,
+   whose FAT filesystem carries its own /EFI/BOOT/BOOTX64.EFI. Patching only the
+   files in the ISO tree therefore has no effect on a UEFI CD start, so the embedded
+   copy is patched in place: the image size never changes, only bytes and the PE
+   checksum inside the FAT data area. */
+static DWORD embedded_pe_size(const BYTE *data, DWORD available)
+{
+    if (available < 0x40 || data[0] != 'M' || data[1] != 'Z')
+        return 0;
+    DWORD pe = u32(data + 0x3c);
+    if (pe + 24 > available || u32(data + pe) != 0x00004550u)
+        return 0;
+    WORD sections = (WORD)(data[pe + 6] | (data[pe + 7] << 8));
+    WORD optional = (WORD)(data[pe + 20] | (data[pe + 21] << 8));
+    DWORD alignment = pe + 24 + optional + 40 <= available ? u32(data + pe + 24 + optional - 4) : 0;
+    DWORD end = 0;
+    for (unsigned i = 0; i < sections; ++i) {
+        DWORD entry = pe + 24 + optional + i * 40;
+        if (entry + 40 > available)
+            return 0;
+        DWORD raw_size = u32(data + entry + 16), raw_at = u32(data + entry + 20);
+        if (raw_at > available || raw_size > available - raw_at)
+            return 0;
+        if (raw_at + raw_size > end)
+            end = raw_at + raw_size;
+    }
+    if (!end)
+        return 0;
+    if (alignment > 1)
+        end = (end + alignment - 1) / alignment * alignment;
+    /* The Authenticode blob sits after the sections and is covered by the file
+       checksum, so the real length is the larger of the two. */
+    DWORD optional_size_check = pe + 24 + optional;
+    if (optional > 0 && optional_size_check <= available) {
+        DWORD magic = data[pe + 24] | (data[pe + 25] << 8);
+        DWORD directories = magic == 0x20b ? 112 : (magic == 0x10b ? 96 : 0);
+        if (directories && optional_size_check + directories + 8 <= available) {
+            DWORD security = pe + 24 + directories + 4 * 8;
+            DWORD offset = u32(data + security), size = u32(data + security + 4);
+            if (size && offset && offset < available && size <= available - offset &&
+                offset + size > end)
+                end = offset + size;
+        }
+    }
+    return end <= available ? end : available;
+}
+
+static BOOL winpe_patch_container(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path)
+{
+    HANDLE file = spp_open(path, GENERIC_READ | GENERIC_WRITE, OPEN_EXISTING);
+    if (file == INVALID_HANDLE_VALUE) {
+        fwprintf(stderr, L"Cannot open %ls.\n", path);
+        return FALSE;
+    }
+    FILETIME created = {0}, accessed = {0}, written = {0};
+    GetFileTime(file, &created, &accessed, &written);
+    Output content = {0};
+    BOOL ok = offline_read(file, &content, algorithm);
+    unsigned patched = 0;
+    for (DWORD o = 0; ok && o + 0x40 < content.size; ++o) {
+        if (content.data[o] != 'M' || content.data[o + 1] != 'Z')
+            continue;
+        DWORD size = embedded_pe_size(content.data + o, content.size - o);
+        if (!size)
+            continue;
+        Image image;
+        Plan plan = {0};
+        if (!image_open(&image, content.data + o, size))
+            continue;
+        BOOL known = plan_winpe_manager(&image, &plan);
+        if (!known) {
+            plan = (Plan){0};
+            known = plan_winpe_cdboot(&image, &plan);
+        }
+        if (!known) {
+            plan = (Plan){0};
+            known = plan_boot(&image, &plan, TRUE) && (plan.count || plan.existing);
+            if (known)
+                fwprintf(stderr, L"  embedded boot manager uses the generic gates\n");
+        }
+        if (!known || !plan.count)
+            continue;
+        for (unsigned e = 0; e < plan.count; ++e) {
+            const Change *change = &plan.edits[e];
+            memcpy(content.data + o + change->at, change->bytes, change->length);
+            wprintf(L"  %06lX  %ls (inside the El Torito image)\n", o + change->at, change->label);
+        }
+        ok = fix_checksum(content.data + o, size) &&
+             digest(algorithm, content.data, content.size, content.sha);
+        ++patched;
+        o += size - 1;
+    }
+    if (ok && patched) {
+        LARGE_INTEGER zero = {0}, end = {.QuadPart = content.size};
+        ok = SetFilePointerEx(file, zero, NULL, FILE_BEGIN) &&
+             write_verified(file, &content, algorithm) &&
+             SetFilePointerEx(file, end, NULL, FILE_BEGIN) && SetEndOfFile(file) && FlushFileBuffers(file);
+        if (ok)
+            patch_keep_times(path, &created, &accessed, &written);
+    }
+    if (file != INVALID_HANDLE_VALUE)
+        CloseHandle(file);
+    free(content.data);
+    if (!patched) {
+        wprintf(L"%ls: no embedded boot manager needed a change.\n", path);
+        return TRUE;
+    }
+    if (ok)
+        wprintf(L"%ls: %u embedded boot manager(s) patched.\n", path, patched);
+    else
+        fwprintf(stderr, L"%ls: the rewritten container could not be verified, keep the FILE.bak copy.\n", path);
+    return ok;
+}
+
+static void winpe_backup(const wchar_t *path)
+{
+    wchar_t backup[PATH_SIZE];
+    if (swprintf(backup, PATH_SIZE, L"%ls.bak", path) <= 0 ||
+        GetFileAttributesW(backup) != INVALID_FILE_ATTRIBUTES)
+        return;
+    HANDLE in = spp_open(path, GENERIC_READ, OPEN_EXISTING);
+    HANDLE out = CreateFileW(backup, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                             FILE_ATTRIBUTE_NORMAL, NULL);
+    BOOL copied = in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE &&
+                  spp_copy_verified(in, out) && FlushFileBuffers(out);
+    if (in != INVALID_HANDLE_VALUE)
+        CloseHandle(in);
+    if (out != INVALID_HANDLE_VALUE)
+        CloseHandle(out);
+    if (!copied)
+        fwprintf(stderr, L"Cannot retain %ls.\n", backup);
+}
 
 static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
 {
@@ -787,11 +920,51 @@ static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
                 fwprintf(stderr, L"Cannot retain %ls.\n", backup);
         }
         wprintf(L"%ls\n", path);
-        if (bootmgr_patch(algorithm, path, BOOT))
+        if (bootmgr_patch(algorithm, path, BOOT, TRUE))
             ++patched;
-        else
+        else if (i >= 1 && i <= 3) {
+            wprintf(L"  layout not recognised, left untouched\n");
             ++skipped;
+        } else {
+            ++skipped;
+        }
     }
+    /* El Torito images carry the boot manager a UEFI CD start really executes. */
+    const wchar_t *const containers[] = {
+        L"efi\\microsoft\\boot\\efisys.bin",
+        L"efi\\microsoft\\boot\\efisys_noprompt.bin"
+    };
+    for (unsigned i = 0; i < ARRAYSIZE(containers); ++i) {
+        wchar_t path[PATH_SIZE];
+        if (!build_path(path, root, containers[i]) || GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
+            continue;
+        winpe_backup(path);
+        wprintf(L"%ls\n", path);
+        winpe_patch_container(algorithm, path);
+    }
+
+    /* Media BCD: do not let the guest start a hypervisor that the virtual firmware
+       may not emulate (VMware panics in hypervMonitor_syn.c otherwise). */
+    {
+        const wchar_t *const stores[] = {L"efi\\microsoft\\boot\\bcd", L"boot\\bcd"};
+        wchar_t tool[PATH_SIZE];
+        if (bcd_tool(tool)) {
+            for (unsigned i = 0; i < ARRAYSIZE(stores); ++i) {
+                wchar_t store[PATH_SIZE];
+                if (!build_path(store, root, stores[i]) || GetFileAttributesW(store) == INVALID_FILE_ATTRIBUTES)
+                    continue;
+                winpe_backup(store);
+                SetFileAttributesW(store, FILE_ATTRIBUTE_NORMAL);
+                wprintf(L"%ls\n", store);
+                if (bcd_element(store, tool, L"{default}", L"hypervisorlaunchtype", L"Off"))
+                    wprintf(L"  hypervisorlaunchtype Off\n");
+                else
+                    fwprintf(stderr, L"  BCD not written; run this from an elevated or SYSTEM prompt, "
+                                     L"or set hypervisorlaunchtype Off with bcdedit yourself.\n");
+            }
+        }
+    }
+
     {
         wchar_t path[PATH_SIZE];
         if (build_path(path, root, L"bootmgr") && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
@@ -811,7 +984,7 @@ static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
                     fwprintf(stderr, L"Cannot retain %ls.\n", backup);
             }
             wprintf(L"%ls\n", path);
-            if (bootmgr_patch(algorithm, path, LEGACY))
+            if (bootmgr_patch(algorithm, path, LEGACY, FALSE))
                 ++patched;
             else
                 ++skipped;
@@ -821,7 +994,7 @@ static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
     return patched ? 0 : 1;
 }
 
-static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role)
+static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role, BOOL manager_rule)
 {
     HANDLE file = spp_open(path, GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER, OPEN_EXISTING);
     if (file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED)
@@ -837,6 +1010,45 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
     if (ok) {
         if (role == LEGACY) {
             ok = patch_legacy(&content) && digest(algorithm, content.data, content.size, content.sha);
+        } else if (manager_rule) {
+            Image image;
+            WORD machine = 0;
+            BOOL changed = FALSE;
+            Plan plan = {0};
+            ok = image_open(&image, content.data, content.size) &&
+                 plan_winpe_manager(&image, &plan);
+            if (!ok) {
+                plan = (Plan){0};
+                ok = image_open(&image, content.data, content.size) &&
+                     plan_winpe_cdboot(&image, &plan);
+                if (ok)
+                    fwprintf(stderr, L"  CD boot application layout\n");
+            }
+            if (!ok) {
+                /* The verified rule only covers the 14316-14357 layout. Other
+                   previews (9909 and friends) fall back to the generic boot
+                   manager gates, which are structural but not boot-tested. */
+                plan = (Plan){0};
+                ok = image_open(&image, content.data, content.size);
+                if (ok) {
+                    plan = (Plan){0};
+                    ok = plan_boot(&image, &plan, TRUE) && (plan.count || plan.existing);
+                    if (ok)
+                        fwprintf(stderr, L"  generic boot manager gates (layout not in the verified set)\n");
+                }
+            }
+            if (ok) {
+                for (unsigned e = 0; e < plan.count; ++e) {
+                    const Change *change = &plan.edits[e];
+                    memcpy(content.data + change->at, change->bytes, change->length);
+                    wprintf(L"  %06lX  %ls\n", change->at, change->label);
+                }
+                changed = plan.count != 0;
+                machine = image.x64 ? IMAGE_FILE_MACHINE_AMD64 : IMAGE_FILE_MACHINE_I386;
+                ok = !changed || fix_checksum(content.data, content.size);
+            }
+            if (ok)
+                ok = digest(algorithm, content.data, content.size, content.sha);
         } else {
             WORD machine = 0;
             BOOL changed = FALSE;
@@ -860,59 +1072,6 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
     }
     patch_keep_times(path, &created, &accessed, &written);
     return TRUE;
-}
-
-static int run_bootmgr(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
-{
-    wchar_t first[PATH_SIZE], second[PATH_SIZE];
-    BOOL ok = TRUE;
-    if (argc == 3) {
-        /* a folder that contains both */
-        wchar_t folder[PATH_SIZE];
-        if (!normalize(folder, argv[2]) ||
-            !build_path(first, folder, L"bootmgr") || !build_path(second, folder, L"bootmgr.efi")) {
-            fwprintf(stderr, L"Usage: nttimebomb /bootmgr FOLDER | bootmgr bootmgr.efi\n");
-            return 2;
-        }
-    } else if (argc == 4) {
-        if (!normalize(first, argv[2]) || !normalize(second, argv[3])) {
-            fwprintf(stderr, L"Usage: nttimebomb /bootmgr FOLDER | bootmgr bootmgr.efi\n");
-            return 2;
-        }
-    } else {
-        fwprintf(stderr, L"Usage: nttimebomb /bootmgr FOLDER | bootmgr bootmgr.efi\n");
-        return 2;
-    }
-    fwprintf(stderr, L"Note: patching a boot manager breaks its Authenticode signature. When the firmware\n"
-                     L"or the boot manager checks that signature, replace the files with the boot\n"
-                     L"managers of a non-expired build (Windows 10 RTM 10240) instead of patching them.\n");
-    for (unsigned i = 0; i < 2; ++i) {
-        const wchar_t *path = i == 0 ? first : second;
-        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
-            fwprintf(stderr, L"Missing %ls.\n", path);
-            ok = FALSE;
-            continue;
-        }
-        wchar_t backup[PATH_SIZE];
-        if (swprintf(backup, PATH_SIZE, L"%ls.bak", path) > 0 &&
-            GetFileAttributesW(backup) == INVALID_FILE_ATTRIBUTES) {
-            HANDLE in = spp_open(path, GENERIC_READ, OPEN_EXISTING);
-            HANDLE out = CreateFileW(backup, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
-                                     FILE_ATTRIBUTE_NORMAL, NULL);
-            BOOL copied = in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE &&
-                          spp_copy_verified(in, out) && FlushFileBuffers(out);
-            if (in != INVALID_HANDLE_VALUE)
-                CloseHandle(in);
-            if (out != INVALID_HANDLE_VALUE)
-                CloseHandle(out);
-            if (!copied)
-                fwprintf(stderr, L"Cannot retain %ls.\n", backup);
-        }
-        wprintf(L"%ls\n", path);
-        if (!bootmgr_patch(algorithm, path, i == 0 ? LEGACY : BOOT))
-            ok = FALSE;
-    }
-    return ok ? 0 : 1;
 }
 
 static int run_ci(int argc, wchar_t **argv)

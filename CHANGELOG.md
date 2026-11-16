@@ -1,4 +1,27 @@
-# 更新日志（NT Timebomb Patch 5.4.0）
+# 更新日志（NT Timebomb Patch 5.4.1）
+
+## 5.4.1 - 2026-11-17
+
+### `/winpe`：cdboot 规则，UEFI 光盘启动打通
+
+- 新增 **cdboot 规则**：`call ; 8b d8 ; 85 c0 ; 79 ; 45 8b c6` 与 `85 c0 ; 79 ; 48 8b 4f 18`
+  两处 `jns → jmp`（9909/14349 偏移 `0x2D58F`、`0x2E45A`）；
+- 验证：按此改写的 `cdboot.efi` 与可用介质 `Patched_14357.1000_WinPE.iso` 内的 cdboot
+  **逐字节完全一致（含 PE 校验和）**；`efisys.bin` 内嵌副本同样完全一致，容器大小不变；
+- 修正容器内 PE 校验和的长度计算（补上 Authenticode 段、修正 DataDirectory 偏移）。
+
+### 打包要求（实测结论）
+
+- **必须用 `oscdimg` 打包**，并用 `-bootdata:...#pEF,e,b<补丁后 efisys.bin>` 把补丁后的
+  UEFI 引导镜像写进 ISO。UltraISO 会沿用源 ISO 的引导镜像，目录树里替换 `efisys.bin` 无效；
+- 不需要"原地改 ISO"的旁路方案。
+
+### Legacy 与虚拟机设置
+
+- BCD 写入 `hypervisorlaunchtype Off` 仍保留，但**不足以**避免 VMware 的
+  `hypervMonitor_syn.c:940` panic；
+- 有效做法：`.vmx` 中去掉 `vhv.enable`、`hypervisor.cpuid.v0` 两行（或取消勾选
+  "Virtualize Intel VT-x/EPT or AMD-V/RVI"）。
 
 ## 5.4.0 - 2026-11-16
 

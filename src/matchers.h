@@ -684,6 +684,108 @@ static BOOL plan_ci_x86_gate(const Image *im, Plan *plan)
     return TRUE;
 }
 
+/* The CD boot application (cdboot.efi, also the copy inside efi\\microsoft\\boot\\
+   efisys.bin) carries the same two status tests as a boot manager but only two of
+   them. The published patch of this layout is two jns -> jmp flips, verified against
+   the working 14357 media. */
+static BOOL plan_winpe_cdboot(const Image *im, Plan *plan)
+{
+    const BYTE *b = im->bytes;
+    DWORD first = NONE, second = NONE;
+    unsigned counts[2] = {0, 0};
+    for (DWORD o = 0; o + 16 <= im->size; ++o) {
+        if (b[o] == 0xe8 && at(im, o + 5, "\x8b\xd8\x85\xc0\x79", "xxxxx") &&
+            at(im, o + 11, "\x45\x8b\xc6", "xxx")) {
+            if (++counts[0] > 1)
+                return FALSE;
+            first = o + 9;
+        }
+        if (at(im, o, "\x85\xc0\x79", "xxx") && at(im, o + 4, "\x48\x8b\x4f\x18", "xxxx")) {
+            if (++counts[1] > 1)
+                return FALSE;
+            second = o + 2;
+        }
+    }
+    if (counts[0] != 1 || counts[1] != 1)
+        return FALSE;
+    if (!record(im, plan, first, "\xeb", 1, L"cdboot image status gate") ||
+        !record(im, plan, second, "\xeb", 1, L"cdboot catalog status gate"))
+        return FALSE;
+    return TRUE;
+}
+
+/* Boot managers of 14316-14357 style builds. The published patch of this layout is
+   four surgical edits, all verified against a known-good 14316 bootx64.efi:
+
+     - the "signed image accepted" test after the hash call  (jns -> jmp)
+     - the same test in its js form                          (status := 0)
+     - the catalog status test                               (jns -> jmp)
+     - the file revocation result                            (status := 0)
+
+   Every site has to be unique in the file, otherwise nothing is written. */
+static BOOL plan_winpe_manager(const Image *im, Plan *plan)
+{
+    const BYTE *b = im->bytes;
+    DWORD first = NONE, second = NONE, third = NONE, fourth = NONE;
+    unsigned counts[4] = {0, 0, 0, 0};
+    for (DWORD o = 0; o + 12 < im->size; ++o) {
+        /* e8 rel32 ; mov ebx,eax ; test eax,eax ; jns rel8 ; mov r8d,esi */
+        if (b[o] == 0xe8 && at(im, o + 5, "\x8b\xd8\x85\xc0\x79", "xxxxx") &&
+            at(im, o + 11, "\x44\x8b\xc6", "xxx")) {
+            if (++counts[0] > 1)
+                return FALSE;
+            first = o + 9;
+        }
+        /* e8 rel32 ; mov ebx,eax ; test eax,eax ; js rel8 ; lea rcx,[rbp-10] */
+        if (b[o] == 0xe8 && at(im, o + 5, "\x8b\xd8\x85\xc0\x78", "xxxxx") &&
+            at(im, o + 11, "\x48\x8d\x4d", "xxx")) {
+            if (++counts[1] > 1)
+                return FALSE;
+            second = o + 5;
+        }
+        /* test eax,eax ; jns rel8 ; mov rax,[rbp+...] */
+        if (at(im, o, "\x85\xc0\x79", "xxx") && at(im, o + 4, "\x48\x8b\x85", "xxx")) {
+            if (++counts[2] > 1)
+                return FALSE;
+            third = o + 2;
+        }
+        /* test eax,eax ; mov ebx,eax ; cmovns edi,r15d ; mov rcx,rdi ; call */
+        if (at(im, o, "\x85\xc0\x8b\xd8\x41\x0f\x49\xdf\x48\x8b\xcf\xe8",
+               "xxxxxxxxxxxx")) {
+            if (++counts[3] > 1)
+                return FALSE;
+            fourth = o + 4;
+        }
+    }
+    if (!im->x64) {
+        /* 32-bit boot managers test the status in esi and follow the js form with
+           "test bl,20h ; jne". Expatched jns -> jmp, the same gate as on x64. */
+        DWORD site = NONE;
+        unsigned x86 = 0;
+        for (DWORD o = 0; o + 8 < im->size; ++o) {
+            if (!at(im, o, "\x85\xf6\x79", "xxx") || !at(im, o + 4, "\xf6\xc3\x20", "xxx"))
+                continue;
+            if (++x86 > 1)
+                return FALSE;
+            site = o + 2;
+        }
+        if (x86 != 1 || !record(im, plan, site, "\xeb", 1, L"boot manager image status gate (32-bit)"))
+            return FALSE;
+        return TRUE;
+    }
+    if (counts[0] != 1 || counts[1] != 1 || counts[2] != 1 || counts[3] != 1) {
+        fwprintf(stderr, L"  Boot manager layout not recognised (gates %u/%u/%u/%u).\n",
+                 counts[0], counts[1], counts[2], counts[3]);
+        return FALSE;
+    }
+    if (!record(im, plan, first, "\xeb", 1, L"boot manager image status gate") ||
+        !record(im, plan, second, "\x31\xc0", 2, L"boot manager image status (js form)") ||
+        !record(im, plan, third, "\xeb", 1, L"boot manager catalog status gate") ||
+        !record(im, plan, fourth, "\x31\xdb\x90\x90", 4, L"boot manager revocation result"))
+        return FALSE;
+    return TRUE;
+}
+
 static BOOL plan_ci(const Image *im, Plan *plan)
 {
     /* 32-bit previews: the expiry callback with its three edits. */
