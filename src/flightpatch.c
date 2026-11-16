@@ -701,17 +701,13 @@ static int help(void)
             L"Provide OSCDIMG and (for ISO input) 7-Zip beside the executable, in PATH, or explicitly.\n"
             L"The new workspace remains available for inspection or manual cleanup after any result.\n\n"
             L"TWO STANDALONE BOOT MANAGERS\n"
-            L"BOOT MANAGERS\n"
-            L"  nttimebomb /bootmgr FOLDER\n"
-            L"  nttimebomb /bootmgr bootmgr bootmgr.efi\n"
-            L"Patches the pair in place: bootmgr.efi through the PE rules and the BIOS\n"
-            L"bootmgr by unpacking its compressed Boot Manager payload, patching it and\n"
-            L"rebuilding the container. FILE.bak keeps each original.\n"
-            L"WARNING: this invalidates their Authenticode signature. If the firmware checks it\n"
-            L"(Secure Boot) or the boot manager checks itself, replace these files with the ones\n"
-            L"from a non-expired build (for example Windows 10 RTM 10240): a replacement keeps a\n"
-            L"valid signature, a patch does not.\n\n"
-            L"  nttimebomb /bootfiles INPUT_FOLDER /out NEW_FOLDER\n"
+            L"WINPE BOOT CHAIN\n"
+            L"  nttimebomb /winpe PE_ROOT\n"
+            L"Patches every boot manager on the media (bootmgr.efi, efi\\boot\\bootx64.efi,\n"
+            L"bootmgfw.efi, cdboot*.efi, memtest and the BIOS bootmgr) so the unmodified\n"
+            L"boot.wim starts at the current date. The boot.wim is not touched. Secure Boot\n"
+            L"must be off; every file keeps a FILE.bak. The BIOS container rebuild is\n"
+            L"experimental: verify a Legacy start in a virtual machine first.\n\n"            L"  nttimebomb /bootfiles INPUT_FOLDER /out NEW_FOLDER\n"
             L"Place bootmgr and bootmgr.efi together in INPUT_FOLDER. Both are verified before\n"
             L"the patched pair is written to a new folder. Deploy them to the matching media.\n\n"
             L"EXISTING OFFLINE MODES\n"
@@ -736,11 +732,95 @@ static int help(void)
     return 0;
 }
 
-/* /bootmgr - patch the two boot managers in place.
+static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role);
 
-   bootmgr.efi is a PE image; the BIOS bootmgr is a 16-bit stub with a compressed
-   Boot Manager payload, which patch_legacy() unpacks, patches through the same PE
-   rules and rebuilds. Both keep a FILE.bak next to them. */
+/* /winpe - patch the boot chain of a WinPE media tree so the unmodified boot.wim
+   starts at the current date.
+
+   The PE itself is left alone: what fails is the boot manager validating the
+   (expired) loader inside boot.wim. Patching the validation gates of every boot
+   manager on the media is the published approach for this layout. UEFI files are
+   patched by default; the BIOS bootmgr container is only touched with /legacy
+   because its payload has to be rebuilt. */
+static const wchar_t *const winpe_files[] = {
+    L"bootmgr.efi",
+    L"efi\\boot\\bootx64.efi",
+    L"efi\\boot\\bootia32.efi",
+    L"efi\\microsoft\\boot\\bootmgfw.efi",
+    L"efi\\microsoft\\boot\\cdboot.efi",
+    L"efi\\microsoft\\boot\\cdboot_noprompt.efi",
+    L"efi\\microsoft\\boot\\memtest.efi",
+    L"boot\\memtest.exe"
+};
+
+static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
+{
+    wchar_t root[PATH_SIZE];
+    if (argc != 3 || !normalize(root, argv[2])) {
+        fwprintf(stderr, L"Usage: nttimebomb /winpe PE_ROOT\n");
+        return 2;
+    }
+    fwprintf(stderr, L"Patching the boot managers breaks their Authenticode signature: Secure Boot must\n"
+                     L"be off. The boot.wim itself is not touched. UEFI is the tested path.\n"
+                     L"EXPERIMENTAL: the BIOS bootmgr container is rebuilt as well; verify a Legacy\n"
+                     L"start in a virtual machine before writing it to real media.\n");
+    unsigned patched = 0, skipped = 0;
+    for (unsigned i = 0; i < ARRAYSIZE(winpe_files); ++i) {
+        wchar_t path[PATH_SIZE];
+        if (!build_path(path, root, winpe_files[i]) || GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+            ++skipped;
+            continue;
+        }
+        wchar_t backup[PATH_SIZE];
+        if (swprintf(backup, PATH_SIZE, L"%ls.bak", path) > 0 &&
+            GetFileAttributesW(backup) == INVALID_FILE_ATTRIBUTES) {
+            HANDLE in = spp_open(path, GENERIC_READ, OPEN_EXISTING);
+            HANDLE out = CreateFileW(backup, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                                     FILE_ATTRIBUTE_NORMAL, NULL);
+            BOOL copied = in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE &&
+                          spp_copy_verified(in, out) && FlushFileBuffers(out);
+            if (in != INVALID_HANDLE_VALUE)
+                CloseHandle(in);
+            if (out != INVALID_HANDLE_VALUE)
+                CloseHandle(out);
+            if (!copied)
+                fwprintf(stderr, L"Cannot retain %ls.\n", backup);
+        }
+        wprintf(L"%ls\n", path);
+        if (bootmgr_patch(algorithm, path, BOOT))
+            ++patched;
+        else
+            ++skipped;
+    }
+    {
+        wchar_t path[PATH_SIZE];
+        if (build_path(path, root, L"bootmgr") && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
+            wchar_t backup[PATH_SIZE];
+            if (swprintf(backup, PATH_SIZE, L"%ls.bak", path) > 0 &&
+                GetFileAttributesW(backup) == INVALID_FILE_ATTRIBUTES) {
+                HANDLE in = spp_open(path, GENERIC_READ, OPEN_EXISTING);
+                HANDLE out = CreateFileW(backup, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                                         FILE_ATTRIBUTE_NORMAL, NULL);
+                BOOL copied = in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE &&
+                              spp_copy_verified(in, out) && FlushFileBuffers(out);
+                if (in != INVALID_HANDLE_VALUE)
+                    CloseHandle(in);
+                if (out != INVALID_HANDLE_VALUE)
+                    CloseHandle(out);
+                if (!copied)
+                    fwprintf(stderr, L"Cannot retain %ls.\n", backup);
+            }
+            wprintf(L"%ls\n", path);
+            if (bootmgr_patch(algorithm, path, LEGACY))
+                ++patched;
+            else
+                ++skipped;
+        }
+    }
+    wprintf(L"%u boot manager(s) patched, %u left untouched, in %ls.\n", patched, skipped, root);
+    return patched ? 0 : 1;
+}
+
 static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role)
 {
     HANDLE file = spp_open(path, GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER, OPEN_EXISTING);
@@ -1288,11 +1368,11 @@ int wmain(int argc, wchar_t **argv)
         return run_winload(argc, argv);
     if (argc >= 2 && (!_wcsicmp(argv[1], L"/bcd") || !_wcsicmp(argv[1], L"/bcd-show")))
         return run_bcd(argc, argv);
-    if (argc >= 2 && !_wcsicmp(argv[1], L"/bootmgr")) {
+    if (argc >= 2 && !_wcsicmp(argv[1], L"/winpe")) {
         BCRYPT_ALG_HANDLE algorithm;
         if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
             return 1;
-        int result = run_bootmgr(algorithm, argc, argv);
+        int result = run_winpe(algorithm, argc, argv);
         BCryptCloseAlgorithmProvider(algorithm, 0);
         return result;
     }

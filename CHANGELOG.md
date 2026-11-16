@@ -1,4 +1,38 @@
-# 更新日志（NT Timebomb Patch 5.3.5）
+# 更新日志（NT Timebomb Patch 5.4.0）
+
+## 5.4.0 - 2026-11-16
+
+### 新增 `/winpe`（取代 `/bootmgr`）
+
+```bat
+nttimebomb /winpe PE_ROOT
+```
+
+目标：**保持 boot.wim 原版**，只改启动链文件，让 PE 在当前日期能启动。
+
+- 默认处理 UEFI 全套：`bootmgr.efi`、`efi\boot\bootx64.efi`、`efi\boot\bootia32.efi`、
+  `efi\microsoft\boot\bootmgfw.efi`、`cdboot.efi`、`cdboot_noprompt.efi`、`memtest.efi`、
+  `boot\memtest.exe`；
+- **同时处理 Legacy 的 `bootmgr`**（BIOS 压缩容器：解包 → 改内部镜像 → 重建）；
+- 每个文件留 `FILE.bak`，PE 目录里不存在目标文件时跳过；
+- 打印：`N boot manager(s) patched, M left untouched, in ROOT`。
+
+改点沿用 `/image` 的引导器规则：镜像哈希门、boot application status、catalog 门、
+0603 吊销结果。原理与 PDF 一致：让引导管理器不再因**过期证书**拒绝它要加载的
+（未修改的）`winload.efi`/镜像。
+
+### 注意
+
+- 打补丁会破坏引导管理器的 Authenticode 签名 → **Secure Boot 必须关闭**；
+- **Legacy 属实验性**：`bootmgr` 需要重压缩并重建容器，工具会在运行时提示先在虚拟机验证，
+  实机/介质写入前请务必确认能正常进入 PE；
+- `/bootmgr` 开关已移除，全部功能并入 `/winpe`。
+
+### 验证
+
+对 14349 原版 PE 目录执行 `/winpe`：6 个 UEFI 引导管理器全部识别并改写
+（`bootmgr.efi` 5 处、`bootx64.efi` 5 处、`cdboot*.efi` 各 2 处、`memtest.efi` 3 处、`memtest.exe` 2 处），
+`bootia32.efi`、`bootmgfw.efi` 在该目录中不存在故跳过。
 
 ## 5.3.5 - 2026-11-16
 
