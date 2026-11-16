@@ -706,7 +706,11 @@ static int help(void)
             L"  nttimebomb /bootmgr bootmgr bootmgr.efi\n"
             L"Patches the pair in place: bootmgr.efi through the PE rules and the BIOS\n"
             L"bootmgr by unpacking its compressed Boot Manager payload, patching it and\n"
-            L"rebuilding the container. FILE.bak keeps each original.\n\n"
+            L"rebuilding the container. FILE.bak keeps each original.\n"
+            L"WARNING: this invalidates their Authenticode signature. If the firmware checks it\n"
+            L"(Secure Boot) or the boot manager checks itself, replace these files with the ones\n"
+            L"from a non-expired build (for example Windows 10 RTM 10240): a replacement keeps a\n"
+            L"valid signature, a patch does not.\n\n"
             L"  nttimebomb /bootfiles INPUT_FOLDER /out NEW_FOLDER\n"
             L"Place bootmgr and bootmgr.efi together in INPUT_FOLDER. Both are verified before\n"
             L"the patched pair is written to a new folder. Deploy them to the matching media.\n\n"
@@ -799,6 +803,9 @@ static int run_bootmgr(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
         fwprintf(stderr, L"Usage: nttimebomb /bootmgr FOLDER | bootmgr bootmgr.efi\n");
         return 2;
     }
+    fwprintf(stderr, L"Note: patching a boot manager breaks its Authenticode signature. When the firmware\n"
+                     L"or the boot manager checks that signature, replace the files with the boot\n"
+                     L"managers of a non-expired build (Windows 10 RTM 10240) instead of patching them.\n");
     for (unsigned i = 0; i < 2; ++i) {
         const wchar_t *path = i == 0 ? first : second;
         if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {

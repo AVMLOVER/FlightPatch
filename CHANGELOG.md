@@ -1,4 +1,20 @@
-# 更新日志（NT Timebomb Patch 5.3.4）
+# 更新日志（NT Timebomb Patch 5.3.5）
+
+## 5.3.5 - 2026-11-16
+
+### `/bootmgr`：补充重要警告
+
+改动引导管理器会**破坏其 Authenticode 签名**。对比用户提供的 9926"可用"与"原版"文件后确认：
+可用那份其实是 **Windows 10 RTM 10240** 的引导管理器（`FileVersion 10.0.10240.16384`，
+`WinVerifyTrust 0x0`），而原版 9926 的 `bootmgr.efi` 是 `0x800B0101`（证书过期）。
+
+因此：
+
+- **UEFI（尤其开 Secure Boot）**：应当**替换** `\bootmgr.efi`、`\efi\boot\bootx64.efi`、
+  `\efi\microsoft\boot\bootmgfw.efi`、`cdboot.efi`、`cdboot_noprompt.efi`、`memtest.efi`
+  为非过期 build（如 10240）的同名文件，而不是打补丁；
+- **Legacy**：BIOS 的 `bootmgr` 容器重建风险高（实测会卡死 / VMware 报错），建议同样用替换法；
+- `/bootmgr` 现在会在运行前打印这条警告，帮助文本也同步说明。
 
 ## 5.3.4 - 2026-11-15
 
