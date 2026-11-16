@@ -128,7 +128,7 @@ static BOOL build_media_iso(const wchar_t *oscdimg, const wchar_t *work,
         return FALSE;
     /* Relative boot paths keep -bootdata valid even when the workspace has spaces. */
     int n = swprintf(command, sizeof command / sizeof *command,
-        L"\"%ls\" -m -o -h -u2 -udfver102 -yo\"%ls\" "
+        L"\"%ls\" -m -o -h -u1 -udfver102 -j -yo\"%ls\" "
         L"-bootdata:2#p0,e,bboot\\etfsboot.com#pEF,e,befi\\microsoft\\boot\\efisys.bin . \"%ls\"",
         oscdimg, order, partial);
     ok = n > 0 && run_tool(oscdimg, command, work);
@@ -187,6 +187,10 @@ static BOOL service_media(const wchar_t *source, const wchar_t *work, const wcha
         ok = build_path(bootsector, work, L"boot\\etfsboot.com") &&
              build_path(efi, work, L"efi\\microsoft\\boot\\efisys.bin") &&
              spp_path_type(bootsector, FALSE, FALSE) && spp_path_type(efi, FALSE, FALSE);
+    if (ok && options->patch_winpe) {
+        wprintf(L"Boot chain in %ls:\n", work);
+        ok = winpe_patch_tree(options->algorithm, work) != 0;
+    }
     MediaInstall install = {.options = options, .mode = mode};
     /* The stage is private. Publish an ISO only after servicing succeeds. */
     const wchar_t *names[] = {L"sources\\boot.wim", L"sources\\install.wim"};

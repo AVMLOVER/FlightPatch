@@ -506,7 +506,7 @@ typedef struct {
     BCRYPT_ALG_HANDLE algorithm;
     const wchar_t *boot, *recovery, *source;
     SppMode spp_mode;
-    BOOL patch_boot, boot_wim, sku_spp;
+    BOOL patch_boot, boot_wim, sku_spp, patch_winpe;
 } ImageOptions;
 
 /* From this build on the FlightSigned token replacement no longer applies: those
@@ -562,6 +562,8 @@ static BOOL service_image(const wchar_t *root, void *context)
     return TRUE;
 }
 
+static unsigned winpe_patch_tree(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root);
+
 #include "media.h"
 #include "bcd.h"
 
@@ -612,19 +614,6 @@ static int help(void)
             L"license or online activation. Unsupported licensing APIs return explicit errors.\n"
             L"This mode is never implied by /image, /spp, /nt6, /media or /cishim. It does not\n"
             L"change CI, boot files, kernels or LicensingUI. Apply /cishim separately if needed.\n\n"
-            L"EXPERIMENTAL MMC CERTIFICATE EXPIRY EXCEPTION\n"
-            L"  nttimebomb /mmc                  (deprecated, see CHANGELOG.md)\n"
-            L"  nttimebomb /mmc-restore\n"
-            L"Run as administrator inside the installed test Windows after OOBE. Requires a\n"
-            L"matching original Microsoft catalog signature whose only trust error is expiry.\n"
-            L"Adds a local embedded signature to native mmc.exe and keeps the original file.\n"
-            L"Test the original MMC entry point and UAC prompt. /mmc-restore restores the\n"
-            L"original executable and removes the local certificate.\n"
-            L"  nttimebomb /mmc-approval [...]   (deprecated, see CHANGELOG.md)\n"
-            L"  nttimebomb /mmc-approval-restore [OFFLINE_WINDOWS_ROOT]\n"
-            L"Without a path, or with the running installation, AppInfo is in use: the replacement is\n"
-            L"staged, applied at the next start, and keeps the original timestamps. A path on\n"
-            L"another volume is edited in place. Unknown layouts are rejected.\n\n"
             L"LUA SWITCH\n"
             L"  nttimebomb /disable-lua [OFFLINE_ROOT]\n"
             L"  nttimebomb /enable-lua [OFFLINE_ROOT]\n"
@@ -686,7 +675,12 @@ static int help(void)
             L"to /cishim and /slshim.\n\n"
             L"COMPLETE INSTALLATION MEDIA\n"
             L"  nttimebomb /media SOURCE_ISO_OR_FOLDER /work NEW_FOLDER /out NEW_ISO\n"
-            L"    [/oscdimg OSCDIMG_EXE] [/7zip SEVENZIP_EXE] [/spp RTM_FOLDER]\n"
+            L"    [/oscdimg OSCDIMG_EXE] [/7zip SEVENZIP_EXE] [/spp RTM_FOLDER] [/winpe]\n"
+            L"  /winpe also patches the boot chain of the extracted media (bootmgr.efi,\n"
+            L"  bootx64.efi, cdboot, the El Torito images efisys*.bin and the BIOS bootmgr).\n"
+            L"  The ISO is rebuilt with oscdimg -u1 -udfver102 -j and -bootdata, so the patched\n"
+            L"  efisys.bin from the work folder becomes the UEFI boot image. sources\\boot.wim\n"
+            L"  is patched like /bootwim in every mode except /spponly and /nt6.\n"
             L"  nttimebomb /media SOURCE /work NEW_FOLDER /out NEW_ISO /spponly RTM_FOLDER\n"
             L"  nttimebomb /media SOURCE /work NEW_FOLDER /out NEW_ISO /nt6 TOKENS_DONOR\n"
             L"With /spponly or /nt6, only all install.wim indexes are serviced. /nt6 also applies\n"
@@ -886,17 +880,8 @@ static void winpe_backup(const wchar_t *path)
         fwprintf(stderr, L"Cannot retain %ls.\n", backup);
 }
 
-static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
+static unsigned winpe_patch_tree(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root)
 {
-    wchar_t root[PATH_SIZE];
-    if (argc != 3 || !normalize(root, argv[2])) {
-        fwprintf(stderr, L"Usage: nttimebomb /winpe PE_ROOT\n");
-        return 2;
-    }
-    fwprintf(stderr, L"Patching the boot managers breaks their Authenticode signature: Secure Boot must\n"
-                     L"be off. The boot.wim itself is not touched. UEFI is the tested path.\n"
-                     L"EXPERIMENTAL: the BIOS bootmgr container is rebuilt as well; verify a Legacy\n"
-                     L"start in a virtual machine before writing it to real media.\n");
     unsigned patched = 0, skipped = 0;
     for (unsigned i = 0; i < ARRAYSIZE(winpe_files); ++i) {
         wchar_t path[PATH_SIZE];
@@ -904,28 +889,13 @@ static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
             ++skipped;
             continue;
         }
-        wchar_t backup[PATH_SIZE];
-        if (swprintf(backup, PATH_SIZE, L"%ls.bak", path) > 0 &&
-            GetFileAttributesW(backup) == INVALID_FILE_ATTRIBUTES) {
-            HANDLE in = spp_open(path, GENERIC_READ, OPEN_EXISTING);
-            HANDLE out = CreateFileW(backup, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
-                                     FILE_ATTRIBUTE_NORMAL, NULL);
-            BOOL copied = in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE &&
-                          spp_copy_verified(in, out) && FlushFileBuffers(out);
-            if (in != INVALID_HANDLE_VALUE)
-                CloseHandle(in);
-            if (out != INVALID_HANDLE_VALUE)
-                CloseHandle(out);
-            if (!copied)
-                fwprintf(stderr, L"Cannot retain %ls.\n", backup);
-        }
+        winpe_backup(path);
         wprintf(L"%ls\n", path);
         if (bootmgr_patch(algorithm, path, BOOT, TRUE))
             ++patched;
-        else if (i >= 1 && i <= 3) {
-            wprintf(L"  layout not recognised, left untouched\n");
-            ++skipped;
-        } else {
+        else {
+            if (i >= 1 && i <= 3)
+                wprintf(L"  layout not recognised, left untouched\n");
             ++skipped;
         }
     }
@@ -942,56 +912,32 @@ static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
         wprintf(L"%ls\n", path);
         winpe_patch_container(algorithm, path);
     }
-
-    /* Media BCD: do not let the guest start a hypervisor that the virtual firmware
-       may not emulate (VMware panics in hypervMonitor_syn.c otherwise). */
-    {
-        const wchar_t *const stores[] = {L"efi\\microsoft\\boot\\bcd", L"boot\\bcd"};
-        wchar_t tool[PATH_SIZE];
-        if (bcd_tool(tool)) {
-            for (unsigned i = 0; i < ARRAYSIZE(stores); ++i) {
-                wchar_t store[PATH_SIZE];
-                if (!build_path(store, root, stores[i]) || GetFileAttributesW(store) == INVALID_FILE_ATTRIBUTES)
-                    continue;
-                winpe_backup(store);
-                SetFileAttributesW(store, FILE_ATTRIBUTE_NORMAL);
-                wprintf(L"%ls\n", store);
-                if (bcd_element(store, tool, L"{default}", L"hypervisorlaunchtype", L"Off"))
-                    wprintf(L"  hypervisorlaunchtype Off\n");
-                else
-                    fwprintf(stderr, L"  BCD not written; run this from an elevated or SYSTEM prompt, "
-                                     L"or set hypervisorlaunchtype Off with bcdedit yourself.\n");
-            }
-        }
-    }
-
-    {
-        wchar_t path[PATH_SIZE];
-        if (build_path(path, root, L"bootmgr") && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
-            wchar_t backup[PATH_SIZE];
-            if (swprintf(backup, PATH_SIZE, L"%ls.bak", path) > 0 &&
-                GetFileAttributesW(backup) == INVALID_FILE_ATTRIBUTES) {
-                HANDLE in = spp_open(path, GENERIC_READ, OPEN_EXISTING);
-                HANDLE out = CreateFileW(backup, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
-                                         FILE_ATTRIBUTE_NORMAL, NULL);
-                BOOL copied = in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE &&
-                              spp_copy_verified(in, out) && FlushFileBuffers(out);
-                if (in != INVALID_HANDLE_VALUE)
-                    CloseHandle(in);
-                if (out != INVALID_HANDLE_VALUE)
-                    CloseHandle(out);
-                if (!copied)
-                    fwprintf(stderr, L"Cannot retain %ls.\n", backup);
-            }
-            wprintf(L"%ls\n", path);
-            if (bootmgr_patch(algorithm, path, LEGACY, FALSE))
-                ++patched;
-            else
-                ++skipped;
-        }
+    wchar_t legacy[PATH_SIZE];
+    if (build_path(legacy, root, L"bootmgr") && GetFileAttributesW(legacy) != INVALID_FILE_ATTRIBUTES) {
+        winpe_backup(legacy);
+        wprintf(L"%ls\n", legacy);
+        if (bootmgr_patch(algorithm, legacy, LEGACY, FALSE))
+            ++patched;
+        else
+            ++skipped;
     }
     wprintf(L"%u boot manager(s) patched, %u left untouched, in %ls.\n", patched, skipped, root);
-    return patched ? 0 : 1;
+    return patched;
+}
+
+static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
+{
+    wchar_t root[PATH_SIZE];
+    if (argc != 3 || !normalize(root, argv[2])) {
+        fwprintf(stderr, L"Usage: nttimebomb /winpe PE_ROOT\n");
+        return 2;
+    }
+    fwprintf(stderr, L"Patching the boot managers breaks their Authenticode signature: Secure Boot must\n"
+                     L"be off. The boot.wim itself is not touched. UEFI is the tested path.\n"
+                     L"EXPERIMENTAL: the BIOS bootmgr container is rebuilt as well; verify a Legacy\n"
+                     L"start in a virtual machine before writing it to real media.\n"
+                     L"Package the result with oscdimg -bootdata so the patched efisys.bin is used.\n");
+    return winpe_patch_tree(algorithm, root) ? 0 : 1;
 }
 
 static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role, BOOL manager_rule)
@@ -1202,12 +1148,24 @@ static int run_restore(int argc, wchar_t **argv)
 
 static int run_new(int argc, wchar_t **argv)
 {
-    BOOL nt6 = FALSE;
+    BOOL nt6 = FALSE, winpe_tree = FALSE, bootwim_flag = FALSE;
     const wchar_t *donor_arg = NULL, *target_arg = NULL, *media_arg = NULL, *work_arg = NULL;
     const wchar_t *out_arg = NULL, *root_arg = NULL, *osc_arg = NULL, *zip_arg = NULL, *spp_arg = NULL;
     const wchar_t *spponly_arg = NULL;
     for (int i = 1; i < argc;) {
         const wchar_t *option = argv[i++];
+        if (!_wcsicmp(option, L"/winpe")) {
+            if (winpe_tree)
+                return 2;
+            winpe_tree = TRUE;
+            continue;
+        }
+        if (!_wcsicmp(option, L"/bootwim")) {
+            if (bootwim_flag)
+                return 2;
+            bootwim_flag = TRUE;
+            continue;
+        }
         if (!_wcsicmp(option, L"/nt6")) {
             if (nt6)
                 return 2;
@@ -1248,6 +1206,8 @@ static int run_new(int argc, wchar_t **argv)
             return 2;
         *slot = argv[i++];
     }
+    if (winpe_tree && !media_arg)
+        return 2;
     if (nt6 && (!donor_arg || root_arg || spp_arg || spponly_arg ||
         (media_arg ? target_arg || !work_arg || !out_arg : !target_arg || work_arg || out_arg || osc_arg || zip_arg)))
         return 2;
@@ -1277,7 +1237,9 @@ static int run_new(int argc, wchar_t **argv)
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)
         return 1;
     MediaMode mode = nt6 ? MEDIA_NT6 : spponly_arg ? MEDIA_SPP_ONLY : MEDIA_PATCH;
-    ImageOptions options = {.algorithm = algorithm, .patch_boot = TRUE, .source = media_donor ? spp : NULL};
+    ImageOptions options = {.algorithm = algorithm, .patch_boot = TRUE, .source = media_donor ? spp : NULL,
+                            .patch_winpe = winpe_tree};
+    (void)bootwim_flag; /* boot.wim is patched by default in /media mode. */
     BOOL ok = media_arg ? service_media(source, work, output, osc_arg, zip_arg, &options, mode) :
                           root_boot_files(algorithm, source, output);
     BCryptCloseAlgorithmProvider(algorithm, 0);
@@ -1501,12 +1463,8 @@ int wmain(int argc, wchar_t **argv)
         wprintf(L"NT Timebomb Patch " NTTP_VERSION_TEXT L"\n");
         return 0;
     }
-    if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc") || !_wcsicmp(argv[1], L"/mmc-restore")))
-        return run_mmc(argc, argv);
             if (argc >= 2 && (!_wcsicmp(argv[1], L"/enable-lua") || !_wcsicmp(argv[1], L"/disable-lua")))
         return run_lua(argc, argv);
-    if (argc >= 2 && (!_wcsicmp(argv[1], L"/mmc-approval") || !_wcsicmp(argv[1], L"/mmc-approval-restore")))
-        return run_mmc_approval(argc, argv);
     if(argc>=2 && (!_wcsicmp(argv[1],L"/slshim") || !_wcsicmp(argv[1],L"/slshim-restore")))
         return run_slshim(argc,argv);
     if (argc >= 2 && (!_wcsicmp(argv[1], L"/cishim") || !_wcsicmp(argv[1], L"/cishim-boot")))
@@ -1527,6 +1485,12 @@ int wmain(int argc, wchar_t **argv)
         return run_winload(argc, argv);
     if (argc >= 2 && (!_wcsicmp(argv[1], L"/bcd") || !_wcsicmp(argv[1], L"/bcd-show")))
         return run_bcd(argc, argv);
+    /* /mmc and /mmc-approval are retired from the command surface; the code stays. */
+    if (0 && argc >= 2 && (!_wcsicmp(argv[1], L"/mmc") || !_wcsicmp(argv[1], L"/mmc-restore")))
+        return run_mmc(argc, argv);
+    if (0 && argc >= 2 && (!_wcsicmp(argv[1], L"/mmc-approval") ||
+                           !_wcsicmp(argv[1], L"/mmc-approval-restore")))
+        return run_mmc_approval(argc, argv);
     if (argc >= 2 && !_wcsicmp(argv[1], L"/winpe")) {
         BCRYPT_ALG_HANDLE algorithm;
         if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0)

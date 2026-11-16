@@ -185,18 +185,6 @@ oscdimg -m -o -u1 -udfver102 -j ^
 
 已验证：按此打包后 UEFI 能正常启动。不需要"原地改 ISO"之类的旁路方案。
 
-## 6.3 介质 BCD
-
-`/winpe` 还会对介质里的两个 BCD 写入：
-
-```
-bcdedit /store <ROOT>\efi\microsoft\boot\bcd /set {default} hypervisorlaunchtype Off
-bcdedit /store <ROOT>\boot\bcd              /set {default} hypervisorlaunchtype Off
-```
-
-目的：让 PE 不去启动 hypervisor，从而绕开 VMware 在 `hypervMonitor_syn.c` 的 panic（见 §7）。
-`bcdedit` 需要管理员/SYSTEM 权限；权限不足时会打印提示并跳过，不影响其它文件。
-
 ## 6.4 Legacy 与虚拟机设置（实测）
 
 Legacy 启动会在 PE 内核阶段触发 VMware 的 monitor panic：
@@ -207,7 +195,6 @@ MONITOR PANIC: vcpu-0:NOT_IMPLEMENTED vmcore/monitor/common/cpu/x86/hypervMonito
 
 实测结论：
 
-- 工具写入的 BCD `hypervisorlaunchtype Off` **并不能**避免这个 panic（同样问题依旧）；
 - 有效做法在虚拟机侧：把 `.vmx` 里的 `vhv.enable` 与 `hypervisor.cpuid.v0` 两行**去掉**
   （或取消勾选 "Virtualize Intel VT-x/EPT or AMD-V/RVI"），Legacy 即可正常启动。
 
@@ -227,8 +214,6 @@ penetration 说明引导管理器已经把 `boot.wim` 交出去了（PE 已进�
 
 | 做法 | 结果 |
 | --- | --- |
-| 工具写入 BCD `hypervisorlaunchtype Off` | **无效**，同样 panic |
 | `.vmx` 里**去掉** `vhv.enable`、`hypervisor.cpuid.v0` 两行（或取消勾选 "Virtualize Intel VT-x/EPT or AMD-V/RVI"） | **有效**，Legacy 正常启动 |
 
-因此 Legacy 使用建议：虚拟机侧按上表第二行处理；BCD 里的 `hypervisorlaunchtype Off` 保留即可
-（无害），但不要指望它解决 panic。
+因此 Legacy 使用建议：虚拟机侧按上表处理。`/winpe` 不再改动 BCD（5.4.2 起）。

@@ -1,4 +1,28 @@
-# 更新日志（NT Timebomb Patch 5.4.1）
+# 更新日志（NT Timebomb Patch 5.4.2）
+
+## 5.4.2 - 2026-11-17
+
+### 命令面调整
+
+- **移除 `/mmc`、`/mmc-restore`、`/mmc-approval`、`/mmc-approval-restore`**：命令行不再提供，
+  帮助里已删除相关段落；**实现代码保留**（`src/mmc.c`、`src/mmc_approval.h`），以便后续维护。
+- **`/winpe` 不再修改 BCD**：只处理启动链文件（原来写入的 `hypervisorlaunchtype Off` 已去掉，
+  实测它对 VMware 的 `hypervMonitor_syn.c` panic 无效）。
+
+### `/media` 集成 `/winpe`
+
+```bat
+nttimebomb /media D:\Preview.iso /work D:\NTTP-Work /out D:\Preview-patched.iso ^
+           /oscdimg C:\Tools\oscdimg.exe /7zip C:\Tools\7z.exe /winpe
+```
+
+- 解包后**自动在工作目录里修补启动链**：`bootmgr.efi`、`efi\boot\bootx64.efi`、
+  `bootmgfw.efi`、`cdboot*.efi`、`memtest*`、`efisys.bin` / `efisys_noprompt.bin` 内嵌镜像、
+  BIOS `bootmgr`；
+- 打包用 `oscdimg -m -o -h -u1 -udfver102 -j -bootdata:2#p0,e,b\boot\etfsboot.com#pEF,e,b\efi\microsoft\boot\efisys.bin`，
+  **工作目录里修好的 `efisys.bin` 会作为 UEFI 引导镜像打进 ISO**；
+- `sources\boot.wim` 按 `/bootwim` 规则修补：**除 `/spponly` 与 `/nt6` 两种模式外**，
+  加不加 `/bootwim` 都修补。
 
 ## 5.4.1 - 2026-11-17
 

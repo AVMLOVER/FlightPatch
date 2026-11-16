@@ -196,7 +196,6 @@ nttimebomb.cmd /winpe D:\PE
 - **El Torito 引导镜像**：`efi\microsoft\boot\efisys.bin`、`efisys_noprompt.bin` 内部那份
   `BOOTX64.EFI`（就是 cdboot）原地改写，容器大小不变；
 - **Legacy**：`bootmgr`（解包压缩容器 → 改内部镜像 → 重建，实验性）；
-- **介质 BCD**：写 `hypervisorlaunchtype Off`（不足以解决 VMware panic，见下）。
 
 打包要求（实测）：
 
@@ -208,9 +207,9 @@ nttimebomb.cmd /winpe D:\PE
   ```
   UltraISO 重新封装会**沿用源 ISO 的引导镜像**，只替换目录树里的 `efisys.bin` 无效；
 - **关闭 Secure Boot**（补丁破坏签名）；
-- **VMware + Legacy**：BCD 的 `hypervisorlaunchtype Off` 不足以避免
-  `hypervMonitor_syn.c:940` panic，需要在虚拟机侧去掉 `.vmx` 里的 `vhv.enable`、
-  `hypervisor.cpuid.v0` 两行（或取消勾选 "Virtualize Intel VT-x/EPT or AMD-V/RVI"）。
+- **VMware + Legacy**：需要在虚拟机侧去掉 `.vmx` 里的 `vhv.enable`、
+  `hypervisor.cpuid.v0` 两行（或取消勾选 "Virtualize Intel VT-x/EPT or AMD-V/RVI"），
+  否则会触发 `hypervMonitor_syn.c:940` panic（改 BCD 无效，`/winpe` 也不再改 BCD）。
 
 原理、偏移表与逐字节验证见 [WINPE.md](WINPE.md)。
 
@@ -226,7 +225,7 @@ zig cc -target x86-windows-gnu  ... -o nttimebomb-x86.exe
 zig cc -target aarch64-windows-gnu ... -o nttimebomb-arm64.exe
 ```
 
-MMC 助手（`src/mmc.c`）额外链接 `-lwintrust`。`as-invoker.res` 是提权清单资源。
+MMC 助手（`src/mmc.c`，命令行已不再提供该功能，代码保留）额外链接 `-lwintrust`。`as-invoker.res` 是提权清单资源。
 
 ---
 
