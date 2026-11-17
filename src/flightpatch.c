@@ -916,6 +916,25 @@ static unsigned winpe_patch_tree(BCRYPT_ALG_HANDLE algorithm, const wchar_t *roo
         wprintf(L"%ls\n", path);
         winpe_patch_container(algorithm, path);
     }
+    /* The patched loader accepts the modified ci.dll only with the CI option off, so
+       the media stores get nointegritychecks on. Both the EFI and the BIOS store are
+       written when they exist. */
+    {
+        wchar_t stores[2][PATH_SIZE], tool[PATH_SIZE];
+        unsigned count = bcd_stores(root, stores);
+        if (count && bcd_tool(tool)) {
+            for (unsigned i = 0; i < count; ++i) {
+                SetFileAttributesW(stores[i], FILE_ATTRIBUTE_NORMAL);
+                wprintf(L"%ls\n", stores[i]);
+                if (bcd_element(stores[i], tool, L"{default}", L"nointegritychecks", L"on"))
+                    wprintf(L"  nointegritychecks on\n");
+                else
+                    fwprintf(stderr, L"  BCD not written; run this from an elevated or SYSTEM prompt and "
+                                     L"set nointegritychecks on with bcdedit.\n");
+            }
+        }
+    }
+
     wchar_t legacy[PATH_SIZE];
     if (build_path(legacy, root, L"bootmgr") && GetFileAttributesW(legacy) != INVALID_FILE_ATTRIBUTES) {
         winpe_backup(legacy);

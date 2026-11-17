@@ -722,33 +722,52 @@ static BOOL plan_winpe_9841(const Image *im, Plan *plan)
     if (im->x64 || im->machine == IMAGE_FILE_MACHINE_ARM64)
         return FALSE;
     const BYTE *b = im->bytes;
-    DWORD first = NONE, second = NONE, third = NONE;
-    unsigned counts[3] = {0, 0, 0};
+    DWORD main_site = NONE, js_site = NONE, gate_site = NONE, other_site = NONE;
+    unsigned counts[4] = {0, 0, 0, 0};
     for (DWORD o = 0; o + 20 <= im->size; ++o) {
+        /* the hash call whose failure is filtered right afterwards */
         if (b[o] == 0xe8 && at(im, o + 5, "\x8b\xf0\x85\xf6\x79", "xxxxx") &&
             at(im, o + 11, "\x8b\x4d\x08\x8b\xd6\x53\xe8", "xxxxxxx")) {
             if (++counts[0] > 1)
                 return FALSE;
-            first = o + 5;
+            main_site = o + 5;
         }
+        /* the same call followed by the 0x20 flag test */
+        if (b[o] == 0xe8 && at(im, o + 5, "\x8b\xf0\x85\xf6\x79", "xxxxx") &&
+            at(im, o + 11, "\xf6\xc3\x20\x0f\x85", "xxxxx")) {
+            if (++counts[3] > 1)
+                return FALSE;
+            other_site = o + 5;
+        }
+        /* the js form of the call */
         if (b[o] == 0xe8 && at(im, o + 5, "\x8b\xf0\x85\xf6\x78", "xxxxx") &&
             at(im, o + 11, "\x8d\x4d\x98\xe8", "xxxx")) {
             if (++counts[1] > 1)
                 return FALSE;
-            second = o + 5;
+            js_site = o + 5;
         }
+        /* a status gate inside the validation body */
         if (at(im, o, "\x8b\xd8\x85\xdb\x79", "xxxxx") &&
             at(im, o + 6, "\x8b\x45\xc8\x8b\xd3\xff\x75\xe0", "xxxxxxxx")) {
             if (++counts[2] > 1)
                 return FALSE;
-            third = o + 4;
+            gate_site = o + 4;
         }
     }
-    if (counts[0] != 1 || counts[1] != 1 || counts[2] != 1)
+    /* Prefer the verified three-site recipe when its js form is present; the flag form
+       only replaces it on layouts that lost that site (9926 and friends). */
+    if (js_site != NONE)
+        other_site = NONE;
+    unsigned edits = (main_site != NONE) + (js_site != NONE) + (gate_site != NONE) + (other_site != NONE);
+    if (main_site == NONE || edits < 2)
         return FALSE;
-    if (!record(im, plan, first, "\x31\xf6", 2, L"9841 hash status clear (jns form)") ||
-        !record(im, plan, second, "\x31\xf6", 2, L"9841 hash status clear (js form)") ||
-        !record(im, plan, third, "\xeb", 1, L"9841 status gate"))
+    if (!record(im, plan, main_site, "\x31\xf6", 2, L"9841 hash status clear (jns form)"))
+        return FALSE;
+    if (js_site != NONE && !record(im, plan, js_site, "\x31\xf6", 2, L"9841 hash status clear (js form)"))
+        return FALSE;
+    if (other_site != NONE && !record(im, plan, other_site, "\x31\xf6", 2, L"9841 hash status clear (flag form)"))
+        return FALSE;
+    if (gate_site != NONE && !record(im, plan, gate_site, "\xeb", 1, L"9841 status gate"))
         return FALSE;
     return TRUE;
 }
@@ -783,10 +802,8 @@ static BOOL plan_winpe_9841_x64(const Image *im, Plan *plan)
     }
     if (pairs != 1)
         return FALSE;
-    if (!record(im, plan, first, "\x90\x90\x90\x90\x90\x90", 6,
-                L"9841 hash check gate") ||
-        !record(im, plan, second, "\x90\x90\x90\x90\x90\x90", 6,
-                L"9841 hash check gate (second)"))
+    if (!record(im, plan, first, "\x90\x90\x90\x90\x90\x90", 6, L"9841 hash check gate") ||
+        !record(im, plan, second, "\x90\x90\x90\x90\x90\x90", 6, L"9841 hash check gate (second)"))
         return FALSE;
     return TRUE;
 }
