@@ -1,4 +1,38 @@
-# 更新日志（NT Timebomb Patch 6.0.0）
+# 更新日志（NT Timebomb Patch 6.0.1）
+
+## 6.0.1 - 2026-11-17
+
+### 14951 的 CI 用符号确认并补上规则
+
+14951 是官方 build，微软符号服务器上有完整符号（已下载核对）：
+
+| 文件 | PDB | 关键符号 |
+| --- | --- | --- |
+| `bootmgr.efi` | `bootmgr.pdb` `E666021D…` | `ImgpValidateImageHash` @ `0x42248`、`BlSecurebootValidateSigningPolicy` @ `0x4359C`、`SIPolicyValidateImage` @ `0x502D4` |
+| `ci.dll` | `ci.pdb` `D53E8947…` | 322 个公开符号（CI 内部函数未导出） |
+
+在 `ci.dll` 里定位到**两个** `mov reg, 0C0000605h` 产出点（`0x362D1`、`0x36355`），其前方都是
+`test cl, cl ; je` 形态。新增"产出点回溯"判定：
+
+```
+for each mov reg, 0C0000605h:
+    walk back ≤ 24 bytes to "84 c9 74"
+    je  →  eb        (unconditional skip of the expiry status)
+```
+
+实测 14951：命中 `0x362CA`、`0x3634A`（两个 `je`），其余字节不变。并且 14951 的
+`winload.efi` / `winresume.efi` 能被**参考加载器配方**直接识别（`/image` 输出
+`Verified offline updates`）。
+
+> 符号还确认了一件重要的事：14951 的 `bootmgr.efi` 里**没有任何站点直接 call
+> `ImgpValidateImageHash`**（它是通过指针调用的），所以介质侧只能靠"完整性开关锚点 + 函数窗口
+> + 调用目标聚类"，这也解释了为什么该代介质只做到部分覆盖。
+
+### README 全面重写
+
+`README.md` 更新为 6.0 版本：三条判定链（CI / 加载器 / 介质）的详细说明、已验证 build 矩阵
+（9841 → 14951，含 x86）、`/winpe` 细节（不留 `.bak`、`oscdimg -bootdata`、BCD 写入）、
+已知限制（14951 BIOS `bootmgr`、14372/14951 介质无实测参照）以及安全模型。
 
 ## 6.0.0 - 2026-11-17
 

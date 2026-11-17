@@ -1195,6 +1195,7 @@ static BOOL plan_ci_late(const Image *im, Plan *plan)
 {
     if (!im->x64)
         return FALSE;
+    const BYTE *b = im->bytes;
     DWORD first = NONE, second = NONE, third = NONE;
     for (DWORD o = 0; o + 16 <= im->size; ++o) {
         if (first == NONE && at(im, o, "\xa8\x01\x74\x17", "xxxx"))
@@ -1222,7 +1223,27 @@ static BOOL plan_ci_late(const Image *im, Plan *plan)
             return FALSE;
         ++edits;
     }
-    return edits >= 2;
+    if (edits < 2) {
+        /* 14951 and close builds: the expiry status is written right after a
+           "test cl, cl ; je good path" pair, so the pair is turned into an
+           unconditional skip. */
+        for (DWORD o = 0; o + 5 <= im->size && edits < 2; ++o) {
+            if (b[o] < 0xb8 || b[o] > 0xbf || u32(b + o + 1) != 0xc0000605u)
+                continue;
+            for (unsigned back = 3; back <= 24; ++back) {
+                DWORD site = o - back;
+                if (site < 3)
+                    break;
+                if (at(im, site, "\x84\xc9\x74", "xxx")) {
+                    if (!record(im, plan, site + 2, "\xeb", 1, L"CI certificate date branch"))
+                        return FALSE;
+                    ++edits;
+                    break;
+                }
+            }
+        }
+    }
+    return edits >= 1;
 }
 
 static BOOL plan_ci(const Image *im, Plan *plan)

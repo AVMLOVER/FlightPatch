@@ -1,13 +1,15 @@
-# NT Timebomb Patch 5.4.2
+# NT Timebomb Patch 6.0.0
 
 Offline servicing for FlightSigned Windows previews: the CI build expiry, the signed
-boot chain of a WinPE medium, the licensing side, and the media build itself. All
-matching is done on **byte structure**, never on a build number or a fixed offset.
+boot chain of a WinPE/ISO medium, the licensing side, and the media build itself.
+**Every match is done on byte structure — never on a build number and never on a fixed
+offset.** When a layout is not recognised the file is left untouched and the tool says
+so instead of guessing.
 
 Chinese documentation: [README.zh-CN.md](README.zh-CN.md).
 WinPE boot chain details: [WINPE.md](WINPE.md). 32-bit CI details: [X86-CI.md](X86-CI.md).
 
-Run `nttimebomb.cmd /version` to print the version, `/help` for the built-in summary.
+Run `nttimebomb.cmd /version` for the version, `/help` for the built-in summary.
 
 ---
 
@@ -15,252 +17,162 @@ Run `nttimebomb.cmd /version` to print the version, `/help` for the built-in sum
 
 - **Elevation**: offline servicing needs an elevated prompt. In WinPE use a SYSTEM
   prompt (`NSudoLC.exe -U:S -P:E cmd.exe` or the WinPE SYSTEM shell).
-- **Local drive paths** under `MAX_PATH`; quote paths that contain spaces.
+- **Local drive paths** under `MAX_PATH`; quote paths containing spaces.
 - **Secure Boot off**: every patched boot file loses its Authenticode signature by
-  design (the reference patches do the same), so firmware must not verify it.
-- For `/cishim` on a preview: the target boot entry needs `nointegritychecks on`,
-  otherwise the loader rejects the patched `ci.dll` with `0xc0000428`.
+  design, so the firmware must not verify it.
 - `/media` needs `oscdimg.exe` and (for ISO input) `7z.exe`; pass them with
   `/oscdimg` and `/7zip`, place them beside the executable, or have them in `PATH`.
 
 ---
 
-## 2. Preview CI build expiry (`/cishim`)
+## 2. The three entry points
 
 ```bat
-:: ci.dll plus the complete loader set, then set the BCD options
-nttimebomb.cmd /cishim D:\mount /bcd S:\
-:: only the loaders
-nttimebomb.cmd /cishim-boot D:\mount
-:: undo
-nttimebomb.cmd /cishim-restore D:\mount
-nttimebomb.cmd /cishim-boot-restore D:\mount
+:: 1. An offline Windows image (install.wim mounted or extracted)
+nttimebomb /image D:\mount
+nttimebomb /image D:\install.wim /out D:\install-patched.wim
+
+:: 2. A WinPE / installation medium (the extracted ISO tree)
+nttimebomb /winpe D:\media
+nttimebomb /winpe D:\media /bootmgr-from D:\verified-media   :: replace boot managers
+
+:: 3. A boot.wim, patched in place or copied
+nttimebomb /bootwim D:\boot.wim /out D:\boot-patched.wim
 ```
 
-- Processes `System32\ci.dll` and `winload.efi`, `winresume.efi`, `winload.exe`,
-  `winresume.exe` plus their `System32\Boot` copies.
-- Accepts an offline Windows root, an extracted folder, or a single file.
-- The loader part keeps only the explicit BCD `nointegritychecks` option; the image
-  hash / catalog / revocation gates belong to `/winload-modify`.
-- A missing or unsupported loader stops the run before `ci.dll` is written.
-- Unknown or ambiguous structures fail without writing anything.
-- Every changed file keeps a `FILE.bak` next to it (owner, DACL, timestamps).
+`/image` and `/bootwim` share the same **loader recipe**; `/winpe` additionally patches
+the medium's boot managers and the copies embedded in the El Torito image, and writes
+`nointegritychecks on` into every BCD store it finds. `/winpe` replaces files **in
+place and keeps no `.bak` copies**; `/image` and `/bootwim` keep the original next to
+the target.
 
-## 3. Boot chain of an expired WinPE (`/winpe`)
+---
 
-Flightsigned PE media stops booting once the certificates expire: the boot manager
-(and the CD boot application) refuse the loader inside `boot.wim`. `/winpe` patches
-the **boot chain only** and leaves `boot.wim` untouched.
+## 3. How the matching works
+
+Three independent chains, each of which requires a **unique structural hit**. A chain
+that does not match hands over to the next one; the last resort either patches with the
+generic gates or leaves the file alone.
+
+### 3.1 `ci.dll` (the build-expiry check)
+
+1. **Four-branch recipe** (10074 / 10120 / 10166 x64): four `jcc → EB` branches, byte
+   identical to a working reference.
+2. **Late recipe** (10587 / 14300 / 14372):
+   - the unique `a8 01 74 17` expiry gate → `90 90`,
+   - two `test cl, cl ; je` branches guarded by the flighting bits → `EB`.
+3. **Producer walk** (14951 and close builds): for every `mov reg, 0C0000605h` producer,
+   walk back to the nearest `test cl, cl ; je` and turn the `je` into an unconditional
+   skip.
+4. **Classic planner**: the historical generic rule, plus `plan_umci`.
+
+### 3.2 Loaders (`winload` / `winresume`, `.efi` and `.exe`)
+
+1. **Reference recipe** (10074 generation, byte identical to a working image):
+   - `mov ebx, eax` after the hash call → `xor eax, eax`,
+   - `mov [rsp+40h], cl` (integrity switch) → `mov cl, 1`,
+   - `mov edi, eax` before the alternate-status check → `xor eax, eax`.
+2. **Structural gates**: image hash gate, catalog/alternate status, parsed revocation
+   list (`0C0000603h`), file revocation result, loader integrity option.
+
+### 3.3 Medium boot managers (`bootmgr.efi`, `bootx64.efi`, `memtest.efi`, `cdboot`)
+
+1. **Verified four-edit set** (14316 / 14349 / 14357), byte identical to a known-good
+   medium;
+2. **9841 generation** (two status clears + one status gate; x86 and x64 variants);
+3. **Reference media recipe** (10074 / 10120 / 10166 / 10587): the integrity switch is
+   located first (`0f b6 4c 24 40 85 c0 41 0f 48 ce`), then every status check within
+   one function-sized window around it is grouped by its call target and cleared
+   (`mov ebx, eax → xor eax, eax`); the store becomes `mov cl, 1`;
+4. **Generic gates**: image hash status, boot application status, catalog status,
+   parsed revocation list.
+
+---
+
+## 4. Verified builds
+
+| Build | `/image` | `/winpe` |
+| --- | --- | --- |
+| 9841 x64 | verified (boots) | verified (boots) |
+| 9841 x86 | verified, byte identical to a working pair | verified |
+| 9926 x86 | structural (status clears before the flag test) | structural |
+| 10074 x64 | **byte identical** to a working `install.wim` (`ci.dll`, `winload.efi`, `winresume.efi`, checksums included) | **code byte identical** to a working medium (`bootmgr.efi`, `memtest.efi`); UEFI and Legacy boot tested |
+| 10074 x86 | 9841-generation rules | 9841-generation rules |
+| 10120 x64 | four-branch CI + reference loaders | reference media recipe |
+| 10166 x64 | four-branch CI + reference loaders | reference media recipe |
+| 10587 x64 | late CI recipe (sites match the old patched set) | reference media recipe |
+| 14300 x64 | late CI recipe, `ci.dll` **byte identical** to the old patched set | reference media recipe |
+| 14372 x64 | late CI recipe | boot managers matched, BIOS `bootmgr` untouched |
+| 14951 x64 | producer-walk CI + reference loaders | boot managers matched, BIOS `bootmgr` untouched |
+
+"Byte identical" means the resulting file equals a known-bootable reference including
+the PE checksum; the only differences that remain are the reference's re-signed
+certificate blob, which cannot and need not be reproduced.
+
+### Known limits
+
+- **14951 BIOS `bootmgr`** (the 16/32-bit container): the generic legacy rebuild cannot
+  match it uniquely, so it is left untouched and the tool prints
+  `Could not uniquely match the image hash caller`.
+- **14372 / 14951 media**: the boot managers get the reference media recipe, but no
+  boot-tested reference exists for those builds yet.
+- Builds whose `ci.dll` predates the four-branch layout and lacks both late signatures
+  fall back to the classic planner; if that fails the file is left untouched.
+
+---
+
+## 5. `/winpe` in detail
 
 ```bat
-:: 1. patch the PE image itself
-nttimebomb.cmd /bootwim D:\media\sources\boot.wim
-:: 2. patch the boot chain of the extracted medium
-nttimebomb.cmd /winpe D:\media
-:: 3. build the ISO - oscdimg is REQUIRED, see the warning below
+nttimebomb /winpe D:\media
+```
+
+- Patches `bootmgr.efi`, `efi\boot\bootx64.efi` (or `bootia32.efi`), `bootmgr`,
+  `boot\memtest.exe`, `efi\microsoft\boot\memtest.efi`, `cdboot*.efi`, and the copies
+  embedded in `efisys*.bin` (in place, container size unchanged);
+- Writes `nointegritychecks on` into `EFI\Microsoft\Boot\BCD` and `boot\bcd` where they
+  exist (needs elevation; otherwise prints the exact `bcdedit` command);
+- **Keeps no `.bak` copies** — files are replaced in place;
+- `boot.wim` is not modified; use `/bootwim` for that.
+
+Pack the result with `oscdimg -bootdata` so the patched El Torito image is used, e.g.
+
+```bat
 oscdimg -m -o -h -u1 -udfver102 -j ^
   -bootdata:2#p0,e,bD:\media\boot\etfsboot.com#pEF,e,bD:\media\efi\microsoft\boot\efisys.bin ^
   D:\media D:\out.iso
 ```
 
-What `/winpe` touches:
+`/bootmgr-from VERIFIED_MEDIA_ROOT` copies `bootmgr.efi` and `efi\boot\bootx64.efi`
+from a known-good medium instead of patching them — useful when a build's boot managers
+are not recognised.
 
-| File | Rule |
-| --- | --- |
-| `bootmgr.efi`, `efi\boot\bootx64.efi`, `efi\microsoft\boot\bootmgfw.efi` | 4 surgical edits (image status gate, its `js` form, catalog gate, revocation result) |
-| `efi\boot\bootia32.efi` | 1 edit (32-bit status gate) |
-| `cdboot.efi`, `cdboot_noprompt.efi` | 2 edits (`jns` to `jmp`) |
-| `efi\microsoft\boot\efisys.bin`, `efisys_noprompt.bin` | the embedded `BOOTX64.EFI` is patched in place, container size unchanged |
-| `memtest.efi`, `boot\memtest.exe` | patched when the layout matches, skipped otherwise |
-| `bootmgr` (BIOS) | unpacked, patched and rebuilt; **experimental** |
-| `EFI\Microsoft\Boot\BCD`, `boot\bcd` | `nointegritychecks on` on `{default}` in every store that exists |
+---
 
-Boot manager layouts the rules recognise (each edit must be unique in the file):
-
-| Layout | Rule | Status |
-| --- | --- | --- |
-| 14316 / 14349 / 14357 (x64) | 4 edits, byte identical to a known-good medium | verified |
-| 9841 x86 | 2 status clears + 1 status gate, byte identical to a known-good medium | verified |
-| 9841 x64 | 2 paired status gates inside the hash body | **boot tested, works** |
-| 9926 x86, 10074 x86 | same call sites, status cleared before the flag test | structural |
-| 10074 x64 (media, `/winpe`) | reference recipe: status clears + integrity store + alternate status | verified against a working medium |
-| 9879 / 10074 / 10587 x64 (media) | every status gate of the hash body error block | structural |
-| 10546 x64 (`bootmgr.efi` only) / 14300 x64 | generic status gates | structural |
-| other previews | generic status gates | structural |
-
-**Packaging warning**: the UEFI boot image is a copy stored in the ISO itself, not
-the file in the directory tree. UltraISO and similar tools keep the source ISO's
-boot image, so replacing `efi\microsoft\boot\efisys.bin` in the tree has no effect.
-Use `oscdimg` with `-bootdata` so the patched `efisys.bin` becomes the boot image.
-This is verified: the patched `cdboot.efi` and the copy inside `efisys.bin` are
-byte for byte identical to a known-good medium, checksum included.
-
-**VMware + Legacy (99xx-series builds only)**: the guest may panic in the VM monitor
-(`hypervMonitor_syn.c:940`). Later and earlier builds are not affected. The tool no longer writes a BCD workaround, because it
-does not help. Remove the `vhv.enable` and `hypervisor.cpuid.v0` lines from the
-`.vmx` (or clear "Virtualize Intel VT-x/EPT or AMD-V/RVI").
-
-## 4. Complete installation media (`/media`)
-
-```bat
-nttimebomb.cmd /media D:\Preview.iso /work D:\NTTP-Work /out D:\Preview-patched.iso ^
-           /oscdimg C:\Tools\oscdimg.exe /7zip C:\Tools\7z.exe /winpe
-```
-
-- Extracts or copies the source into `WORK`, services every `boot.wim` and
-  `install.wim` index, then rebuilds a BIOS + UEFI ISO with `oscdimg`.
-- `/winpe` additionally patches the boot chain **inside the work folder**, including
-  the copy embedded in `efisys*.bin`; the rebuilt ISO uses the patched file as its
-  UEFI boot image (`-bootdata`).
-- `sources\boot.wim` is patched like `/bootwim` in every mode **except** `/spponly`
-  and `/nt6`. `/bootwim` is accepted as a no-op flag for compatibility.
-- `WORK` must not exist yet; it stays available for inspection after any result.
-
-```bat
-:: SPP only (install.wim indexes)
-nttimebomb.cmd /media SRC.iso /work W /out O.iso /spponly D:\RTM
-:: NT6 tokens + optional Branding (install.wim indexes)
-nttimebomb.cmd /media SRC.iso /work W /out O.iso /nt6 D:\DONOR
-```
-
-`/media` requires standalone `sources\boot.wim` and `sources\install.wim` plus the
-BIOS/UEFI El Torito files. Split WIMs and `install.esd` are not accepted.
-
-## 5. Preview images below Build 15063
-
-```bat
-nttimebomb.cmd /image D:\mount [/boot S:] [/recovery D:\Recovery] [/spp D:\RTM]
-nttimebomb.cmd /spponly D:\mount /spp D:\RTM
-nttimebomb.cmd /spponly IN.wim /out OUT.wim /spp D:\RTM [/index N|all]
-nttimebomb.cmd /bootwim D:\mount
-nttimebomb.cmd /bootwim IN.wim /out OUT.wim [/index N]
-```
-
-- `/image` services CI, loaders, kernel expiry and (with `/spp`) SPP on an offline root.
-- `/spponly` replaces SPP, preserving boot files, CI, kernels and LicensingUI; a donor
-  is required (`spp*` shared files and the SKU `*.cat` files side by side, an optional
-  `CatRoot` subfolder).
-- `/nt6 /file DONOR /target ROOT` copies only `System32\spp\tokens` (plus optional
-  `Branding`), grants `NT SERVICE\sppsvc` full control, and refuses Build 15063+.
-- **Build 15063 and newer is refused**: nothing is changed, the message points at
-  `/cishim` (CI) and `/slshim` (licensing).
-- `/index all` services every index; `/image` and `/spponly` default to index 1,
-  `/bootwim` defaults to all.
-
-## 6. Boot configuration (`/bcd`, `/bcd-template`)
-
-```bat
-nttimebomb.cmd /bcd S:\                 :: ESP: EFI\Microsoft\Boot\BCD
-nttimebomb.cmd /bcd D:\media            :: media root: both EFI and boot\bcd
-nttimebomb.cmd /bcd S:\ {GUID}
-nttimebomb.cmd /bcd-show D:\media
-nttimebomb.cmd /bcd-template D:\mount   :: Windows\System32\config\BCD-Template
-```
-
-`/bcd` writes `nointegritychecks on` (required by the patched `ci.dll`) and
-`recoveryenabled No` (so a failed start stops at the boot menu instead of running
-automatic repair). `/bcd-template` prepares an image so newly created stores inherit
-both settings. `/cishim` and `/cishim-boot` accept `/bcd ESP` to do it in one step.
-
-## 7. LUA switch (`/enable-lua`, `/disable-lua`)
-
-```bat
-nttimebomb.cmd /disable-lua            :: running system (elevated), EnableLUA = 0
-nttimebomb.cmd /disable-lua W:\        :: offline volume's config\SOFTWARE hive
-nttimebomb.cmd /enable-lua
-```
-
-Writes `EnableLUA` (0 or 1) in `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`.
-The offline path reuses the certificate-store machinery (previous hive kept as a
-backup). A restart is required. The three uiAccess programs (`osk.exe`,
-`Narrator.exe`, `Magnify.exe`) only start with `EnableLUA=0`; four alternative
-repairs were measured ineffective.
-
-## 8. Licensing shim (`/slshim`, experimental)
-
-```bat
-nttimebomb.cmd /slshim D:\mount
-nttimebomb.cmd /slshim-restore D:\mount
-```
-
-Replaces the licensing client DLLs, disables existing Windows licensing services and
-installs a LocalSystem shim using that SKU's ProductPolicy. Backups live in
-`OFFLINE_ROOT\NTTimebombBackup\SLShim`. This is a local licensing emulation, not a
-Microsoft licence or online activation. Never implied by `/image`, `/spp`, `/nt6`,
-`/media` or `/cishim`; it does not touch CI, boot files or LicensingUI.
-
-## 9. Restore
-
-```bat
-nttimebomb.cmd /restore D:\mount
-nttimebomb.cmd /cishim-restore D:\mount
-nttimebomb.cmd /cishim-boot-restore D:\mount
-nttimebomb.cmd /winload-modify-restore D:\mount
-```
-
-Every changed file keeps a verified `FILE.bak` (original owner, DACL, attributes);
-older packages used `FILE.nttp-original`, also accepted. Restore writes the original
-bytes back, re-applies the metadata, verifies the result and removes that backup.
-Files without a retained original are left alone. Use `/cishim-restore` from WinPE
-to undo a `/cishim` that does not boot.
-
-## 10. Command surface
+## 6. Other commands
 
 | Command | Purpose |
 | --- | --- |
-| `/cishim`, `/cishim-boot` (+ `/bcd ESP`) | preview CI build expiry and loader set |
-| `/winload-modify` | loader image-hash / catalog / revocation / integrity-option gates |
-| `/winpe PE_ROOT` | boot chain of an expired WinPE medium |
-| `/bootwim` | patch a `boot.wim` (CI, loaders, kernel) |
-| `/media ...` (+ `/winpe`) | full ISO build: extract, service, rebuild |
-| `/image`, `/spponly`, `/spp`, `/spp-reference`, `/nt6` | preview images below 15063 |
-| `/bcd`, `/bcd-show`, `/bcd-template` | offline BCD options |
-| `/enable-lua`, `/disable-lua` | `EnableLUA` on a running system or an offline hive |
-| `/slshim`, `/slshim-restore` | licensing shim (experimental) |
-| `/restore`, `*-restore` | write the retained originals back |
-| `/bootfiles IN /out OUT` | patch `bootmgr` + `bootmgr.efi` as a pair |
-| `/version`, `/help` | version and usage |
+| `/cishim`, `/cishim-boot` (+ `-restore`) | CI + loader servicing for an offline root with BCD handling |
+| `/slshim` | licensing side of the preview (SPP) |
+| `/nt6` | legacy NT6 boot path |
+| `/bcd ESP_OR_MEDIA_ROOT` | show/write `nointegritychecks` for both BCD stores |
+| `/bcd-template` | create a minimal BCD store |
+| `/restore` | put the retained originals back |
+| `/bootfiles INPUT /out DIR` | patch a loose folder of boot files |
+| `/media ISO_OR_DIR` | patch an ISO or a media tree end to end |
+| `/enable-lua`, `/disable-lua` | toggle the Lua/PPL side |
+| `/version`, `/help` | version and summary |
 
-Removed from the command surface (implementations are still in the tree):
-`/mmc`, `/mmc-restore`, `/mmc-approval`, `/mmc-approval-restore`, `/bootmgr`,
-`/wintrust*`, `/uac*`, `/uiaccess*`, `/wd`.
+---
 
-## 11. Building
+## 7. Safety model
 
-Zig is enough (`zig cc`, no MSVC needed):
-
-```bat
-zig rc /fo as-invoker.res -- src/flightpatch.rc
-zig cc -target x86-windows-gnu      -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -lcrypt32 -lncrypt -o nttimebomb-x86.exe
-zig cc -target x86_64-windows-gnu   -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -lcrypt32 -lncrypt -o nttimebomb-x64.exe
-zig cc -target aarch64-windows-gnu  -municode -std=c11 -Oz -s src/flightpatch.c as-invoker.res -ladvapi32 -lbcrypt -lntdll -lversion -lcrypt32 -lncrypt -o nttimebomb-arm64.exe
-:: the MMC helper (retired from the CLI, code kept)
-zig cc -target x86_64-windows-gnu   -municode -std=c11 -Oz -s src/mmc.c as-invoker.res -ladvapi32 -lbcrypt -lwintrust -lcrypt32 -lncrypt -o nttimebomb-mmc-x64.exe
-```
-
-`tools/package.py OUTPUT.zip` builds the release archive (binaries, scripts, sources,
-dependencies, notices, docs).
-
-## 12. Limitations
-
-- Secure Boot must be off for every patched boot file.
-- The BIOS `bootmgr` container rebuild is experimental: verify a Legacy start in a
-  virtual machine before writing real media.
-- VMware guests may panic in the monitor on Legacy starts of **99xx-series** builds
-  only; fix the VM settings, not the media (see section 3).
-- **9841 x86 UEFI** is patched natively: the three edits derived from a working
-  9841 x86 medium (two status clears and one `jns` to `jmp`) reproduce it byte for
-  byte.
-- **9841 x64 UEFI**: tested and working. The 32-bit recipe does not exist in this code,
-  so the rule NOPs the pair of identical `js` status checks inside the hash validation
-  body (they are 0x1A bytes apart and divert to the same error block). If a future layout
-  stops at `0xc0000428`, use:
-  `nttimebomb /winpe D:\boot /bootmgr-from D:\Patched_14357.1000_WinPE` copies the
-  verified `bootmgr.efi` + `efi\boot\bootx64.efi` over the 9841 ones (originals keep a
-  `FILE.bak`); keep 9841's `cdboot*.efi`, `efisys*.bin` and the `/bootwim` result, then
-  rebuild with oscdimg.
-- 32-bit preview `ci.dll` layouts are covered for 9841, 9860, 9926, 10074, 10143,
-  10525, 10546, 10587 and 14347; other layouts are refused rather than guessed.
-- Windows Defender on preview builds is out of scope.
-
-Licence: see [LICENSE](LICENSE).
+- Every edit is bound to a unique structural pattern; a non-unique match aborts that
+  file instead of writing a guess.
+- Plans are re-verified after writing (hash of the produced file), and the PE checksum
+  is recomputed over the whole file.
+- Unrecognised layouts are reported (`Unsupported or ambiguous structure`,
+  `layout not recognised`) and left byte-identical to the input.
+- The generated output for the verified builds above equals the working reference
+  byte for byte, so a regression shows up as a non-zero diff immediately.
