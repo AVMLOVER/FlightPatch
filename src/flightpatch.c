@@ -197,9 +197,10 @@ static BOOL patch_pe(BYTE *data, DWORD size, Role role, WORD *machine, BOOL *cha
                  plan_boot(&im, &plan, role == LOADER);
     if (!valid || (!plan.count && !plan.existing))
         return FALSE;
-    /* The status sweep proved too blunt in testing: it can break the loader's own error
-       handling, so it is no longer applied by default. The structural gates above are
-       the patch /bootwim ships. */
+    /* The loaders produce "certificate expired" themselves; clearing that single status
+       is the minimal addition. The broader sweep broke error handling and is gone. */
+    if (role == LOADER)
+        plan_loader_expired_sweep(&im, &plan);
 
     for (unsigned i = 0; i < plan.count; ++i) {
         const Change *e = &plan.edits[i];

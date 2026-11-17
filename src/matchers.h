@@ -458,32 +458,23 @@ static BOOL plan_file_revocation(const Image *im, Plan *plan)
     return TRUE;
 }
 
-/* The loaders themselves produce the two CI statuses we care about:
-   STATUS_IMAGE_CERT_EXPIRED (0C0000605h) once in each loader, and
-   STATUS_INVALID_IMAGE_HASH (0C0000428h) from many early-exit paths. Zeroing the
-   destination register makes those paths return success instead. */
-static BOOL plan_loader_status_sweep(const Image *im, Plan *plan)
+/* Each loader carries exactly one "certificate expired" producer next to the code that
+   sets the flighting bits ("or dword [r14+8], 600000h ; mov ebx, 0C0000605h"). Zeroing
+   that register keeps the load going while leaving every other error path untouched. */
+static BOOL plan_loader_expired_sweep(const Image *im, Plan *plan)
 {
     const BYTE *b = im->bytes;
-    static const char expired[] = "\x05\x06\x00\xc0";
-    static const char invalid[] = "\x28\x04\x00\xc0";
     unsigned count = 0;
     for (DWORD o = 0; o + 5 <= im->size; ++o) {
-        if (b[o] < 0xb8 || b[o] > 0xbf)
+        if (b[o] < 0xb8 || b[o] > 0xbf || !at(im, o + 1, "\x05\x06\x00\xc0", "xxxx"))
             continue;
-        BOOL expired_hit = at(im, o + 1, expired, "xxxx");
-        BOOL invalid_hit = !expired_hit && at(im, o + 1, invalid, "xxxx");
-        if (!expired_hit && !invalid_hit)
-            continue;
-        if (++count > 48)
+        if (++count > 4)
             return FALSE;
         char patch[5];
         patch[0] = 0x31;
         patch[1] = (char)(0xc0 | (b[o] & 7));
         patch[2] = patch[3] = patch[4] = (char)0x90;
-        if (!record(im, plan, o, patch, 5,
-                    expired_hit ? L"expired status becomes success"
-                                : L"invalid image hash status becomes success"))
+        if (!record(im, plan, o, patch, 5, L"expired status becomes success"))
             return FALSE;
     }
     return count > 0;
