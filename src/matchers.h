@@ -884,6 +884,27 @@ static BOOL plan_winpe_signature_x64(const Image *im, Plan *plan)
     return TRUE;
 }
 
+/* The boot manager reports a rejected image with STATUS_INVALID_IMAGE_HASH from more
+   than one place (policy checks, loader validation, revocation paths). Returning success
+   from all of them is what makes an expired loader acceptable, so every assignment of
+   that status is rewritten. */
+static BOOL plan_winpe_status_all_x64(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    unsigned count = 0;
+    for (DWORD o = 0; o + 5 <= im->size; ++o) {
+        if (!at(im, o, "\xb8\x28\x04\x00\xc0", "xxxxx"))
+            continue;
+        if (++count > 32)
+            return FALSE;
+        if (!record(im, plan, o, "\x31\xc0\x90\x90\x90", 5, L"invalid image hash status becomes success"))
+            return FALSE;
+    }
+    return count > 0;
+}
+
 /* Boot managers of 14316-14357 style builds. The published patch of this layout is
    four surgical edits, all verified against a known-good 14316 bootx64.efi:
 

@@ -1060,6 +1060,11 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                         ok = TRUE;
                     }
                 }
+                /* A boot manager can report the rejected image from several places; clear
+                   them all so no path returns STATUS_INVALID_IMAGE_HASH. */
+                if (image_open(&image, content.data, content.size) &&
+                    plan_winpe_status_all_x64(&image, &plan))
+                    ok = TRUE;
             }
             if (!ok) {
                 /* The verified rule only covers the 14316-14357 layout. Other
