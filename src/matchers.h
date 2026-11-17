@@ -9,7 +9,7 @@ typedef struct {
     WORD machine;
 } Image;
 
-enum { NONE = UINT32_MAX, MAX_EDITS = 32 };
+enum { NONE = UINT32_MAX, MAX_EDITS = 96 };
 
 typedef struct {
     DWORD at;

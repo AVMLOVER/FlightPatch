@@ -1,4 +1,24 @@
-# 更新日志（NT Timebomb Patch 5.5.6）
+# 更新日志（NT Timebomb Patch 5.5.7）
+
+## 5.5.7 - 2026-11-17
+
+### 修复 5.5.6 导致的 `/bootwim` 失败（`Unsupported or ambiguous structure`）
+
+原因：计划缓冲区只有 32 个槽位（`MAX_EDITS`），而加载器状态清零要给 `winload.efi` 写
+**39 处**，先执行清零就把槽位占满，随后的结构计划（哈希门等）无处可写 → 整体判为
+"结构不识别"。
+
+修复：
+
+- `MAX_EDITS` 32 → **96**；
+- 清零改为在**结构计划成功之后**追加（结构识别是前提，清零是附加项，槽位不够时自动放弃）。
+
+实测（10074 原版 `winload.efi`，`/image` 流程）：
+
+```
+01759E … 01BB44   invalid image hash status becomes success   （39 处）
+01C52B            expired status becomes success             （1 处）
+```
 
 ## 5.5.6 - 2026-11-17
 

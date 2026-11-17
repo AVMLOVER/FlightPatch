@@ -191,14 +191,16 @@ static BOOL patch_pe(BYTE *data, DWORD size, Role role, WORD *machine, BOOL *cha
     if (!image_open(&im, data, size))
         return FALSE;
     Plan plan = {0};
-    if (role == LOADER)
-        plan_loader_status_sweep(&im, &plan);
     BOOL valid = role == CI ? plan_ci(&im, &plan) :
                  role == KERNEL ? plan_kernel(&im, &plan) :
                  role == HVLOADER ? plan_hvloader(&im, &plan) && plan_boot(&im, &plan, TRUE) :
                  plan_boot(&im, &plan, role == LOADER);
     if (!valid || (!plan.count && !plan.existing))
         return FALSE;
+    /* The structural patch is the gate; clearing the status producers is an addition and
+       may be skipped when the plan is already full. */
+    if (role == LOADER)
+        plan_loader_status_sweep(&im, &plan);
 
     for (unsigned i = 0; i < plan.count; ++i) {
         const Change *e = &plan.edits[i];
