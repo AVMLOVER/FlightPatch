@@ -197,10 +197,9 @@ static BOOL patch_pe(BYTE *data, DWORD size, Role role, WORD *machine, BOOL *cha
                  plan_boot(&im, &plan, role == LOADER);
     if (!valid || (!plan.count && !plan.existing))
         return FALSE;
-    /* The structural patch is the gate; clearing the status producers is an addition and
-       may be skipped when the plan is already full. */
-    if (role == LOADER)
-        plan_loader_status_sweep(&im, &plan);
+    /* The status sweep proved too blunt in testing: it can break the loader's own error
+       handling, so it is no longer applied by default. The structural gates above are
+       the patch /bootwim ships. */
 
     for (unsigned i = 0; i < plan.count; ++i) {
         const Change *e = &plan.edits[i];
