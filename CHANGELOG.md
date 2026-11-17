@@ -1,4 +1,34 @@
-# 更新日志（NT Timebomb Patch 5.5.9）
+# 更新日志（NT Timebomb Patch 5.5.10）
+
+## 5.5.10 - 2026-11-17
+
+### 加载器：清掉"flight-signed"标记
+
+10074 的加载器在报告"证书过期"之前，会先把镜像标记为 flight-signed：
+
+```
+41 81 4e 08 00 00 60 00      or dword [r14+8], 600000h
+```
+
+`/bootwim` 现在把这处 `or` 整体改成 NOP（每个加载器 1 处），并把紧随其后的
+`mov ebx, 0C0000605h` 清零：
+
+| 文件 | 改点 |
+| --- | --- |
+| `winload.efi` | `0x1C523`（标记）+ `0x1C52B`（过期状态） |
+| `winresume.efi` | `0xA50F4` + `0xA50FC` |
+
+理由：Legacy 过了引导、过了加载器，却在 Logo 之后 `PAGE_FAULT_IN_NONPAGED_AREA`，很可能是
+内核拿到的"flight 签名策略"与补丁后的 CI 状态不一致导致的。
+
+### UEFI 建议用已验证引导管理器
+
+介质侧的补丁仍无法让 UEFI 通过（`0xc0000428`），而用 14357 的引导文件可以走到 PE 阶段，
+因此 10074 的 UEFI 请直接：
+
+```bat
+nttimebomb /winpe D:\10074 /bootmgr-from D:\Patched_14357.1000_WinPE
+```
 
 ## 5.5.9 - 2026-11-17
 

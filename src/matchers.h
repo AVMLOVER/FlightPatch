@@ -465,6 +465,32 @@ static BOOL plan_loader_expired_sweep(const Image *im, Plan *plan)
 {
     const BYTE *b = im->bytes;
     unsigned count = 0;
+    /* The loader marks the image as flight-signed right before reporting expiry; keeping
+       that bit clear stops the kernel from treating the boot set as flight signed. */
+    if (at(im, 0, "", "")) {
+        unsigned marks = 0;
+        for (DWORD o = 0; o + 8 <= im->size; ++o) {
+            if (at(im, o, "\x41\x81\x4e\x08\x00\x00\x60\x00", "xxxxxxxx")) {
+                if (++marks > 1)
+                    return FALSE;
+                if (!record(im, plan, o, "\x90\x90\x90\x90\x90\x90\x90\x90", 8,
+                            L"flighting mark cleared"))
+                    return FALSE;
+            }
+            if (o + 6 <= im->size && at(im, o, "\x81\xc8", "xx")) {
+                /* x86 form: or r32, 600000h with any destination */
+                BYTE modrm = b[o + 1];
+                if ((modrm & 0xf8) == 0xc8 &&
+                    u32(b + o + 2) == 0x00600000u) {
+                    if (++marks > 1)
+                        return FALSE;
+                    if (!record(im, plan, o, "\x90\x90\x90\x90\x90\x90", 6,
+                                L"flighting mark cleared"))
+                        return FALSE;
+                }
+            }
+        }
+    }
     for (DWORD o = 0; o + 5 <= im->size; ++o) {
         if (b[o] < 0xb8 || b[o] > 0xbf || !at(im, o + 1, "\x05\x06\x00\xc0", "xxxx"))
             continue;
