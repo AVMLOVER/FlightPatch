@@ -808,6 +808,33 @@ static BOOL plan_winpe_9841_x64(const Image *im, Plan *plan)
     return TRUE;
 }
 
+/* Newer 64-bit previews (10074 and close builds) keep a single status test in the hash
+   validation body, followed by the "mov r8d/edx, 0x1000002" setup. The jump must be
+   unique in the file, otherwise nothing is written. */
+static BOOL plan_winpe_late_x64(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    DWORD site = NONE;
+    unsigned count = 0;
+    for (DWORD o = 0; o + 0x20 < im->size; ++o) {
+        if (!at(im, o, "\x8b\xd8\x85\xc0\x0f\x88", "xxxxxx"))
+            continue;
+        if (!at(im, o + 10, "\x41\x8b", "xx") || b[o + 13] != 0x08 ||
+            !at(im, o + 14, "\x41\xb9\x02\x00\x01\x00", "xxxxxx"))
+            continue;
+        if (++count > 1)
+            return FALSE;
+        site = o + 4;
+    }
+    if (count != 1)
+        return FALSE;
+    if (!record(im, plan, site, "\x90\x90\x90\x90\x90\x90", 6, L"late hash check gate"))
+        return FALSE;
+    return TRUE;
+}
+
 /* Boot managers of 14316-14357 style builds. The published patch of this layout is
    four surgical edits, all verified against a known-good 14316 bootx64.efi:
 

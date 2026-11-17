@@ -73,6 +73,18 @@ What `/winpe` touches:
 | `efi\microsoft\boot\efisys.bin`, `efisys_noprompt.bin` | the embedded `BOOTX64.EFI` is patched in place, container size unchanged |
 | `memtest.efi`, `boot\memtest.exe` | patched when the layout matches, skipped otherwise |
 | `bootmgr` (BIOS) | unpacked, patched and rebuilt; **experimental** |
+| `EFI\Microsoft\Boot\BCD`, `boot\bcd` | `nointegritychecks on` on `{default}` in every store that exists |
+
+Boot manager layouts the rules recognise (each edit must be unique in the file):
+
+| Layout | Rule | Status |
+| --- | --- | --- |
+| 14316 / 14349 / 14357 (x64) | 4 edits, byte identical to a known-good medium | verified |
+| 9841 x86 | 2 status clears + 1 status gate, byte identical to a known-good medium | verified |
+| 9841 x64 | 2 paired status gates inside the hash body | **boot tested, works** |
+| 9926 x86, 10074 x86 | same call sites, status cleared before the flag test | structural |
+| 10074 x64 | single status gate inside the hash body | structural |
+| other previews | generic status gates | structural |
 
 **Packaging warning**: the UEFI boot image is a copy stored in the ISO itself, not
 the file in the directory tree. UltraISO and similar tools keep the source ISO's
@@ -237,10 +249,10 @@ dependencies, notices, docs).
 - **9841 x86 UEFI** is patched natively: the three edits derived from a working
   9841 x86 medium (two status clears and one `jns` to `jmp`) reproduce it byte for
   byte.
-- **9841 x64 UEFI**: the 32-bit recipe does not exist in this code, so the rule instead
-  NOPs the pair of identical `js` status checks inside the hash validation body (they
-  are 0x1A bytes apart and divert to the same error block). This edit is
-  **experimental** and not yet boot-tested. If UEFI still stops at `0xc0000428`, use:
+- **9841 x64 UEFI**: tested and working. The 32-bit recipe does not exist in this code,
+  so the rule NOPs the pair of identical `js` status checks inside the hash validation
+  body (they are 0x1A bytes apart and divert to the same error block). If a future layout
+  stops at `0xc0000428`, use:
   `nttimebomb /winpe D:\boot /bootmgr-from D:\Patched_14357.1000_WinPE` copies the
   verified `bootmgr.efi` + `efi\boot\bootx64.efi` over the 9841 ones (originals keep a
   `FILE.bak`); keep 9841's `cdboot*.efi`, `efisys*.bin` and the `/bootwim` result, then
