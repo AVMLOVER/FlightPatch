@@ -553,6 +553,44 @@ static BOOL plan_loader_10074(const Image *im, Plan *plan)
     return a >= 1 && bb >= 1 && cc >= 1;
 }
 
+/* Media boot managers of the 10074 generation: the reference recipe clears the status
+   after three different "mov [rsp+20h], eax ; call ... ; mov ebx, eax ; test ; jns"
+   shapes, rewrites the integrity store and clears the alternate status. */
+static BOOL plan_media_10074(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    unsigned a = 0, bb = 0, cc = 0;
+    for (DWORD o = 0; o + 24 <= im->size; ++o) {
+        BOOL shape1 = at(im, o, "\x89\x44\x24\x20\xe8", "xxxxx");
+        BOOL shape2 = at(im, o, "\x44\x89\x6c\x24\x20\xe8", "xxxxxx");
+        BOOL shape3 = at(im, o, "\x89\x4c\x24\x20\x48\x8b\x4f\x18\xe8", "xxxxxxxxx");
+        if (shape1 || shape2 || shape3) {
+            DWORD at_off = shape2 ? o + 10 : shape3 ? o + 13 : o + 9;
+            if (at(im, at_off, "\x8b\xd8\x85\xc0\x79", "xxxxx") ||
+                at(im, at_off, "\x31\xc0\x85\xc0\x79", "xxxxx")) {
+                if (++a <= 4 && !at(im, at_off, "\x31\xc0", "xx") &&
+                    !record(im, plan, at_off, "\x31\xc0", 2, L"reference hash status gate"))
+                    return FALSE;
+            }
+        }
+        if (at(im, o, "\x0f\xb6\x4c\x24\x40\x85\xc0\x41\x0f\x48\xce", "xxxxxxxxxxx") &&
+            (at(im, o + 11, "\x88\x4c\x24\x40", "xxxx") || at(im, o + 11, "\xb1\x01\x90\x90", "xxxx"))) {
+            if (++bb == 1 && !at(im, o + 11, "\xb1\x01", "xx") &&
+                !record(im, plan, o + 11, "\xb1\x01\x90\x90", 4, L"reference integrity option"))
+                return FALSE;
+        }
+        if (at(im, o, "\x45\x8b\xc4\x48\x8b\x48\x18\xe8", "xxxxxxxx") &&
+            (at(im, o + 12, "\x8b\xf8\x85\xc0\x0f\x88", "xxxxxx") ||
+             at(im, o + 12, "\x31\xc0\x85\xc0\x0f\x88", "xxxxxx"))) {
+            if (++cc == 1 && !at(im, o + 12, "\x31\xc0", "xx") &&
+                !record(im, plan, o + 12, "\x31\xc0", 2, L"reference alternate status"))
+                return FALSE;
+        }
+    }
+    return a >= 1 && bb >= 1;
+}
+
 /* 10074-generation ci.dll: the reference media flip four conditional branches so the
    certificate date and policy checks stop rejecting the image. Each site has to be
    unique in the file, otherwise nothing is written. */

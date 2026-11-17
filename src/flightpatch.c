@@ -1032,9 +1032,12 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                      plan_winpe_cdboot(&image, &plan);
                 if (ok)
                     fwprintf(stderr, L"  CD boot application layout\n");
-                if (image_open(&image, content.data, content.size) &&
-                    plan_winpe_status_all_x64(&image, &plan))
+
+                if (!ok && image_open(&image, content.data, content.size) &&
+                    plan_loader_10074(&image, &plan)) {
+                    fwprintf(stderr, L"  reference loader layout\n");
                     ok = TRUE;
+                }
             } else {
                 /* The 9841 generation has its own verified three-edit layout; try it
                    before the later rule so its two status clears are not missed. */
@@ -1054,6 +1057,13 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                     if (ok)
                         fwprintf(stderr, L"  9841-generation x64 boot manager layout\n");
                 }
+                if (!ok) {
+                    plan = (Plan){0};
+                    ok = image_open(&image, content.data, content.size) &&
+                         plan_media_10074(&image, &plan);
+                    if (ok)
+                        fwprintf(stderr, L"  reference media layout\n");
+                }
                 BOOL keep_verified = ok;
                 if (!ok) {
                     plan = (Plan){0};
@@ -1071,11 +1081,6 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                         ok = TRUE;
                     }
                 }
-                /* A boot manager can report the rejected image from several places; clear
-                   them all so no path returns STATUS_INVALID_IMAGE_HASH. */
-                if (image_open(&image, content.data, content.size) &&
-                    plan_winpe_status_all_x64(&image, &plan))
-                    ok = TRUE;
             }
             if (!ok) {
                 /* The verified rule only covers the 14316-14357 layout. Other
