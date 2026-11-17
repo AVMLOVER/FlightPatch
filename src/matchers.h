@@ -553,9 +553,6 @@ static BOOL plan_loader_10074(const Image *im, Plan *plan)
     return a >= 1 && bb >= 1 && cc >= 1;
 }
 
-/* Media boot managers of the 10074 generation: the reference recipe clears the status
-   after three different "mov [rsp+20h], eax ; call ... ; mov ebx, eax ; test ; jns"
-   shapes, rewrites the integrity store and clears the alternate status. */
 static BOOL plan_media_10074(const Image *im, Plan *plan)
 {
     if (!im->x64)
@@ -1189,6 +1186,43 @@ static BOOL plan_winpe_manager(const Image *im, Plan *plan)
         !record(im, plan, fourth, "\x31\xdb\x90\x90", 4, L"boot manager revocation result"))
         return FALSE;
     return TRUE;
+}
+
+/* 10587 / 14372 / 14300 / 14951 generation: the lenient recipe. Three sites, each
+   required to be unique: the "test al,1 ; je" gate is NOPed and the two "test cl,cl ; je"
+   gates become unconditional jumps. */
+static BOOL plan_ci_late(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    DWORD first = NONE, second = NONE, third = NONE;
+    for (DWORD o = 0; o + 16 <= im->size; ++o) {
+        if (first == NONE && at(im, o, "\xa8\x01\x74\x17", "xxxx"))
+            first = o + 2;
+        if (second == NONE && at(im, o, "\x84\xc9\x74", "xxx") &&
+            (at(im, o + 4, "\x81\xce\x00\x00\x60\x00", "xxxxxx") ||
+             at(im, o + 4, "\x41\x81\xce\x00\x00\x60\x00", "xxxxxxx") ||
+             at(im, o + 4, "\x0f\xba\xee\x16", "xxxx") ||
+             at(im, o + 4, "\x41\x0f\xba\xee\x16", "xxxxx")))
+            second = o + 2;
+        if (third == NONE && at(im, o, "\x8b\x74\x24\x58\x84\xc9\x74", "xxxxxxx"))
+            third = o + 6;
+    }
+    unsigned edits = 0;
+    if (first != NONE) {
+        if (!record(im, plan, first, "\x90\x90", 2, L"CI expiry status gate"))
+            return FALSE;
+        ++edits;
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        DWORD site = i ? third : second;
+        if (site == NONE)
+            continue;
+        if (!record(im, plan, site, "\xeb", 1, L"CI certificate date branch"))
+            return FALSE;
+        ++edits;
+    }
+    return edits >= 2;
 }
 
 static BOOL plan_ci(const Image *im, Plan *plan)

@@ -192,13 +192,29 @@ static BOOL patch_pe(BYTE *data, DWORD size, Role role, WORD *machine, BOOL *cha
         return FALSE;
     Plan plan = {0};
     BOOL valid;
-    if (role == LOADER && plan_loader_10074(&im, &plan))
-        valid = TRUE;   /* reference recipe for this generation */
-    else if (role == CI && plan_ci_10074(&im, &plan))
-        valid = TRUE;   /* the four reference branches cover this build completely */
-    else
-        valid = role == CI ? plan_ci(&im, &plan) :
-                 role == KERNEL ? plan_kernel(&im, &plan) :
+    if (role == LOADER) {
+        valid = plan_loader_10074(&im, &plan);
+        if (!valid) {
+            plan = (Plan){0};
+            valid = plan_boot(&im, &plan, TRUE);
+        }
+    }
+    else if (role == CI) {
+        /* The four reference branches win; when they are not present the lenient
+           late-generation recipe runs, and the classic planner is the last resort.
+           Each attempt starts from an empty plan so the edits never collide. */
+        plan = (Plan){0};
+        valid = plan_ci_10074(&im, &plan);
+        if (!valid) {
+            plan = (Plan){0};
+            valid = plan_ci_late(&im, &plan);
+        }
+        if (!valid) {
+            plan = (Plan){0};
+            valid = plan_ci(&im, &plan);
+        }
+    } else
+        valid = role == KERNEL ? plan_kernel(&im, &plan) :
                  role == HVLOADER ? plan_hvloader(&im, &plan) && plan_boot(&im, &plan, TRUE) :
                  plan_boot(&im, &plan, role == LOADER);
     if (!valid || (!plan.count && !plan.existing))
@@ -874,21 +890,7 @@ static BOOL winpe_patch_container(BCRYPT_ALG_HANDLE algorithm, const wchar_t *pa
 
 static void winpe_backup(const wchar_t *path)
 {
-    wchar_t backup[PATH_SIZE];
-    if (swprintf(backup, PATH_SIZE, L"%ls.bak", path) <= 0 ||
-        GetFileAttributesW(backup) != INVALID_FILE_ATTRIBUTES)
-        return;
-    HANDLE in = spp_open(path, GENERIC_READ, OPEN_EXISTING);
-    HANDLE out = CreateFileW(backup, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW,
-                             FILE_ATTRIBUTE_NORMAL, NULL);
-    BOOL copied = in != INVALID_HANDLE_VALUE && out != INVALID_HANDLE_VALUE &&
-                  spp_copy_verified(in, out) && FlushFileBuffers(out);
-    if (in != INVALID_HANDLE_VALUE)
-        CloseHandle(in);
-    if (out != INVALID_HANDLE_VALUE)
-        CloseHandle(out);
-    if (!copied)
-        fwprintf(stderr, L"Cannot retain %ls.\n", backup);
+    (void)path;   /* the media files are replaced in place */
 }
 
 static unsigned winpe_patch_tree(BCRYPT_ALG_HANDLE algorithm, const wchar_t *root)
@@ -1032,12 +1034,9 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                      plan_winpe_cdboot(&image, &plan);
                 if (ok)
                     fwprintf(stderr, L"  CD boot application layout\n");
-
-                if (!ok && image_open(&image, content.data, content.size) &&
-                    plan_loader_10074(&image, &plan)) {
-                    fwprintf(stderr, L"  reference loader layout\n");
+                if (image_open(&image, content.data, content.size) &&
+                    plan_winpe_status_all_x64(&image, &plan))
                     ok = TRUE;
-                }
             } else {
                 /* The 9841 generation has its own verified three-edit layout; try it
                    before the later rule so its two status clears are not missed. */
@@ -1057,6 +1056,7 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                     if (ok)
                         fwprintf(stderr, L"  9841-generation x64 boot manager layout\n");
                 }
+                BOOL keep_verified = ok;
                 if (!ok) {
                     plan = (Plan){0};
                     ok = image_open(&image, content.data, content.size) &&
@@ -1064,7 +1064,6 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                     if (ok)
                         fwprintf(stderr, L"  reference media layout\n");
                 }
-                BOOL keep_verified = ok;
                 if (!ok) {
                     plan = (Plan){0};
                     ok = image_open(&image, content.data, content.size) &&
@@ -1081,6 +1080,11 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                         ok = TRUE;
                     }
                 }
+                /* A boot manager can report the rejected image from several places; clear
+                   them all so no path returns STATUS_INVALID_IMAGE_HASH. */
+                if (image_open(&image, content.data, content.size) &&
+                    plan_winpe_status_all_x64(&image, &plan))
+                    ok = TRUE;
             }
             if (!ok) {
                 /* The verified rule only covers the 14316-14357 layout. Other
