@@ -187,7 +187,7 @@ oscdimg -m -o -u1 -udfver102 -j ^
 
 ## 6.4 Legacy 与虚拟机设置（实测）
 
-Legacy 启动会在 PE 内核阶段触发 VMware 的 monitor panic：
+**99xx 系列的 Legacy** 启动会在 PE 内核阶段触发 VMware 的 monitor panic（其他版本没有这个问题）：
 
 ```
 MONITOR PANIC: vcpu-0:NOT_IMPLEMENTED vmcore/monitor/common/cpu/x86/hypervMonitor_syn.c:940
@@ -207,7 +207,7 @@ MONITOR PANIC: vcpu-0:NOT_IMPLEMENTED vmcore/monitor/common/cpu/x86/hypervMonito
 Monitor Panic.  Last Disk I/O was to the MBR
 ```
 
-这是 **VMware monitor 自身对 Hyper-V 合成接口的实现缺口**，不是 Windows 或补丁的问题：
+这是 **VMware monitor 自身对 Hyper-V 合成接口的实现缺口**，且只出现在 99xx 系列构建上；不是 Windows 或补丁的问题：
 penetration 说明引导管理器已经把 `boot.wim` 交出去了（PE 已进入图形阶段）。
 
 实测过的处理方式：

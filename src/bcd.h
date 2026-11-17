@@ -2,12 +2,33 @@
    refuses the modified ci.dll with 0xc0000428. These helpers drive bcdedit
    against an offline BCD store on a supplied EFI System Partition. */
 
+/* An EFI System Partition keeps the store at EFI\Microsoft\Boot\BCD; an extracted
+   installation medium also carries the BIOS store at boot\bcd. Both are serviced so a
+   media tree can be prepared in one step. */
+static unsigned bcd_stores(const wchar_t *root, wchar_t stores[2][PATH_SIZE])
+{
+    static const wchar_t *const names[2] = {L"EFI\\Microsoft\\Boot\\BCD", L"boot\\bcd"};
+    unsigned count = 0;
+    for (unsigned i = 0; i < 2; ++i) {
+        wchar_t path[PATH_SIZE];
+        if (build_path(path, root, names[i]) && spp_path_type(path, FALSE, FALSE)) {
+            wcscpy(stores[count], path);
+            ++count;
+        }
+    }
+    return count;
+}
+
 static BOOL bcd_store(const wchar_t *esp, wchar_t store[PATH_SIZE])
 {
-    if (!build_path(store, esp, L"EFI\\Microsoft\\Boot\\BCD") || !spp_path_type(store, FALSE, FALSE)) {
-        fwprintf(stderr, L"No EFI\\Microsoft\\Boot\\BCD under %ls. Point this at the EFI System Partition.\n", esp);
+    wchar_t stores[2][PATH_SIZE];
+    unsigned count = bcd_stores(esp, stores);
+    if (!count) {
+        fwprintf(stderr, L"No EFI\\Microsoft\\Boot\\BCD or boot\\bcd under %ls. "
+                         L"Point this at the EFI System Partition or a media root.\n", esp);
         return FALSE;
     }
+    wcscpy(store, stores[0]);
     return TRUE;
 }
 
@@ -48,32 +69,45 @@ static BOOL bcd_element(const wchar_t *store, const wchar_t *tool, const wchar_t
    attempt in the boot menu instead of starting the automatic repair. */
 static BOOL bcd_set_nointegritychecks(const wchar_t *esp, const wchar_t *guid)
 {
-    wchar_t store[PATH_SIZE], tool[PATH_SIZE];
-    if (!bcd_store(esp, store) || !bcd_tool(tool))
+    wchar_t stores[2][PATH_SIZE], tool[PATH_SIZE];
+    unsigned count = bcd_stores(esp, stores);
+    if (!count || !bcd_tool(tool))
         return FALSE;
-    if (!bcd_element(store, tool, guid, L"nointegritychecks", L"on"))
-        return FALSE;
-    if (!bcd_element(store, tool, guid, L"recoveryenabled", L"No"))
-        fwprintf(stderr, L"recoveryenabled was not set; the CI option is still in place.\n");
-    wprintf(L"nointegritychecks is on and recovery is off for %ls in %ls.\n", guid, store);
-    return TRUE;
+    BOOL ok = TRUE;
+    for (unsigned i = 0; i < count; ++i) {
+        if (!bcd_element(stores[i], tool, guid, L"nointegritychecks", L"on")) {
+            ok = FALSE;
+            continue;
+        }
+        if (!bcd_element(stores[i], tool, guid, L"recoveryenabled", L"No"))
+            fwprintf(stderr, L"recoveryenabled was not set in %ls; the CI option is still in place.\n",
+                     stores[i]);
+        wprintf(L"nointegritychecks is on and recovery is off for %ls in %ls.\n", guid, stores[i]);
+    }
+    return ok;
 }
 
 static BOOL bcd_show(const wchar_t *esp, const wchar_t *guid)
 {
-    wchar_t store[PATH_SIZE], tool[PATH_SIZE], command[600];
-    if (!bcd_store(esp, store) || !bcd_tool(tool))
+    wchar_t stores[2][PATH_SIZE], tool[PATH_SIZE], command[600];
+    unsigned count = bcd_stores(esp, stores);
+    if (!count || !bcd_tool(tool))
         return FALSE;
-    if (swprintf(command, ARRAYSIZE(command), L"\"%ls\" /store \"%ls\" /enum %ls /v", tool, store, guid) < 0)
-        return FALSE;
-    if (!run_tool(tool, command, NULL))
-        return FALSE;
-    /* Print the two flags the CI patch depends on, even when the enumeration above
-       does not show them (bcdedit hides defaults). */
-    if (swprintf(command, ARRAYSIZE(command), L"\"%ls\" /store \"%ls\" /enum %ls /v | findstr /i \"nointegritychecks recoveryenabled\"",
-                 tool, store, guid) > 0)
-        run_tool(tool, command, NULL);
-    return TRUE;
+    BOOL ok = TRUE;
+    for (unsigned i = 0; i < count; ++i) {
+        if (swprintf(command, ARRAYSIZE(command), L"\"%ls\" /store \"%ls\" /enum %ls /v",
+                     tool, stores[i], guid) < 0 || !run_tool(tool, command, NULL)) {
+            ok = FALSE;
+            continue;
+        }
+        /* Print the two flags the CI patch depends on, even when the enumeration above
+           does not show them (bcdedit hides defaults). */
+        if (swprintf(command, ARRAYSIZE(command),
+                     L"\"%ls\" /store \"%ls\" /enum %ls /v | findstr /i \"nointegritychecks recoveryenabled\"",
+                     tool, stores[i], guid) > 0)
+            run_tool(tool, command, NULL);
+    }
+    return ok;
 }
 
 /* The BCD template inside an image is what new stores are created from, so an image
@@ -112,7 +146,7 @@ static int run_bcd(int argc, wchar_t **argv)
     const wchar_t *guid = L"{default}";
     BOOL show = !_wcsicmp(argv[1], L"/bcd-show");
     if ((argc != 3 && argc != 4) || !normalize(esp, argv[2]) || (argc == 4 && (!argv[3][0] || argv[3][0] == L'/'))) {
-        fwprintf(stderr, L"Usage: nttimebomb %ls EFI_SYSTEM_PARTITION [ENTRY_GUID]\n", argv[1]);
+        fwprintf(stderr, L"Usage: nttimebomb %ls ESP_OR_MEDIA_ROOT [ENTRY_GUID]\n", argv[1]);
         return 2;
     }
     if (argc == 4)

@@ -1,4 +1,21 @@
-# 更新日志（NT Timebomb Patch 5.4.2）
+# 更新日志（NT Timebomb Patch 5.4.3）
+
+## 5.4.3 - 2026-11-17
+
+### `/bcd`、`/bcd-show` 支持介质根目录，并同时处理两个 BCD 存储
+
+- 以前只认 `EFI\Microsoft\Boot\BCD`；现在如果目标目录同时有 `boot\bcd`（BIOS 存储），
+  `/bcd` 会把 `nointegritychecks on` 与 `recoveryenabled No` **两个存储都写入**，
+  `/bcd-show` 也两个都打印；
+- 参数说明改为 `ESP_OR_MEDIA_ROOT`，可以直接对整个解开的 ISO 目录执行：
+  ```bat
+  nttimebomb /bcd D:\media
+  nttimebomb /bcd-show D:\media
+  ```
+
+### 文档
+
+- Legacy 的 VMware `hypervMonitor_syn.c:940` panic 标注为**仅 99xx 系列构建**（其他版本不受影响）。
 
 ## 5.4.2 - 2026-11-17
 

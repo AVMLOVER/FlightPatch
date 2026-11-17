@@ -81,8 +81,8 @@ Use `oscdimg` with `-bootdata` so the patched `efisys.bin` becomes the boot imag
 This is verified: the patched `cdboot.efi` and the copy inside `efisys.bin` are
 byte for byte identical to a known-good medium, checksum included.
 
-**VMware + Legacy**: the guest may panic in the VM monitor
-(`hypervMonitor_syn.c:940`). The tool no longer writes a BCD workaround, because it
+**VMware + Legacy (99xx-series builds only)**: the guest may panic in the VM monitor
+(`hypervMonitor_syn.c:940`). Later and earlier builds are not affected. The tool no longer writes a BCD workaround, because it
 does not help. Remove the `vhv.enable` and `hypervisor.cpuid.v0` lines from the
 `.vmx` (or clear "Virtualize Intel VT-x/EPT or AMD-V/RVI").
 
@@ -136,9 +136,10 @@ nttimebomb.cmd /bootwim IN.wim /out OUT.wim [/index N]
 ## 6. Boot configuration (`/bcd`, `/bcd-template`)
 
 ```bat
-nttimebomb.cmd /bcd S:\                 :: nointegritychecks on + recoveryenabled No
+nttimebomb.cmd /bcd S:\                 :: ESP: EFI\Microsoft\Boot\BCD
+nttimebomb.cmd /bcd D:\media            :: media root: both EFI and boot\bcd
 nttimebomb.cmd /bcd S:\ {GUID}
-nttimebomb.cmd /bcd-show S:\
+nttimebomb.cmd /bcd-show D:\media
 nttimebomb.cmd /bcd-template D:\mount   :: Windows\System32\config\BCD-Template
 ```
 
@@ -231,8 +232,8 @@ dependencies, notices, docs).
 - Secure Boot must be off for every patched boot file.
 - The BIOS `bootmgr` container rebuild is experimental: verify a Legacy start in a
   virtual machine before writing real media.
-- VMware guests may panic in the monitor on Legacy starts; fix the VM settings, not
-  the media (see section 3).
+- VMware guests may panic in the monitor on Legacy starts of **99xx-series** builds
+  only; fix the VM settings, not the media (see section 3).
 - 32-bit preview `ci.dll` layouts are covered for 9841, 9860, 9926, 10074, 10143,
   10525, 10546, 10587 and 14347; other layouts are refused rather than guessed.
 - Windows Defender on preview builds is out of scope.

@@ -207,9 +207,9 @@ nttimebomb.cmd /winpe D:\PE
   ```
   UltraISO 重新封装会**沿用源 ISO 的引导镜像**，只替换目录树里的 `efisys.bin` 无效；
 - **关闭 Secure Boot**（补丁破坏签名）；
-- **VMware + Legacy**：需要在虚拟机侧去掉 `.vmx` 里的 `vhv.enable`、
+- **VMware + Legacy（仅 99xx 系列构建）**：需要在虚拟机侧去掉 `.vmx` 里的 `vhv.enable`、
   `hypervisor.cpuid.v0` 两行（或取消勾选 "Virtualize Intel VT-x/EPT or AMD-V/RVI"），
-  否则会触发 `hypervMonitor_syn.c:940` panic（改 BCD 无效，`/winpe` 也不再改 BCD）。
+  否则会触发 `hypervMonitor_syn.c:940` panic（其他版本没有这个问题；改 BCD 无效，`/winpe` 也不再改 BCD）。
 
 原理、偏移表与逐字节验证见 [WINPE.md](WINPE.md)。
 
