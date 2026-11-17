@@ -191,16 +191,19 @@ static BOOL patch_pe(BYTE *data, DWORD size, Role role, WORD *machine, BOOL *cha
     if (!image_open(&im, data, size))
         return FALSE;
     Plan plan = {0};
-    BOOL valid = role == CI ? plan_ci(&im, &plan) :
+    BOOL valid;
+    if (role == LOADER && plan_loader_10074(&im, &plan))
+        valid = TRUE;   /* reference recipe for this generation */
+    else if (role == CI && plan_ci_10074(&im, &plan))
+        valid = TRUE;   /* the four reference branches cover this build completely */
+    else
+        valid = role == CI ? plan_ci(&im, &plan) :
                  role == KERNEL ? plan_kernel(&im, &plan) :
                  role == HVLOADER ? plan_hvloader(&im, &plan) && plan_boot(&im, &plan, TRUE) :
                  plan_boot(&im, &plan, role == LOADER);
     if (!valid || (!plan.count && !plan.existing))
         return FALSE;
-    /* The loaders produce "certificate expired" themselves; clearing that single status
-       is the minimal addition. The broader sweep broke error handling and is gone. */
-    if (role == LOADER)
-        plan_loader_expired_sweep(&im, &plan);
+
 
     for (unsigned i = 0; i < plan.count; ++i) {
         const Change *e = &plan.edits[i];

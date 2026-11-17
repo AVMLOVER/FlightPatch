@@ -307,6 +307,14 @@ static BOOL plan_boot_options(const Image *im, Plan *plan)
             DWORD after = patch + length;
             if (!at(im, after, "\x88\x4c\x24\x40", "xxxx"))
                 continue;
+            /* Reference media patch the store itself ("mov [rsp+40h], cl" becomes
+               "mov cl, 1") and leave the cmov alone; do the same. */
+            if (im->x64) {
+                if (!record(im, plan, after, "\xb1\x01\x90\x90", 4, L"loader integrity option"))
+                    return FALSE;
+                ++count;
+                continue;
+            }
             unsigned tail = 0;
             while (tail < 24 && after + 4 + tail + 5 <= im->size &&
                    !at(im, after + 4 + tail, "\xba\x49\x00\x00\x16", "xxxxx"))
@@ -504,6 +512,91 @@ static BOOL plan_loader_expired_sweep(const Image *im, Plan *plan)
             return FALSE;
     }
     return count > 0;
+}
+
+/* 10074-generation x64 loaders and boot managers: the reference recipe is three edits.
+   A: a call result stored in the [rsp+20h] shadow slot and then "mov ebx, eax ; test
+      eax, eax ; jns" - the status is cleared instead of the branch.
+   B: "mov [rsp+40h], cl" right after the cmov becomes "mov cl, 1".
+   C: "mov edi, eax ; test eax, eax ; js" after the r15/r14 setup gets cleared. */
+static BOOL plan_loader_10074(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    unsigned a = 0, bb = 0, cc = 0;
+    for (DWORD o = 0; o + 18 <= im->size; ++o) {
+        /* A: "mov [rsp+20h], eax ; call ... ; mov ebx, eax ; test eax, eax ; jns" */
+        if (at(im, o, "\x89\x44\x24\x20\xe8", "xxxxx") &&
+            at(im, o + 9, "\x8b\xd8\x85\xc0\x79\x67\x44\x8b\xc6", "xxxxxxxxx")) {
+            if (++a == 1 &&
+                !record(im, plan, o + 9, "\x31\xc0", 2, L"image hash status gate"))
+                return FALSE;
+        }
+        /* B: the integrity store right after the cmov (the first one only) */
+        if (at(im, o, "\x0f\xb6\x4c\x24\x40\x85\xc0\x41\x0f\x48\xce\x88\x4c\x24\x40", "xxxxxxxxxxxxxxx")) {
+            if (++bb > 1)
+                continue;
+            if (!record(im, plan, o + 11, "\xb1\x01\x90\x90", 4, L"loader integrity option"))
+                return FALSE;
+        }
+        /* C: alternate status after the r15/r14 setup (or its distinct disp32 form) */
+        BOOL c_site = at(im, o, "\x45\x8b\xc4\x48\x8b\x48\x18\xe8", "xxxxxxxxx") &&
+                      at(im, o + 12, "\x8b\xf8\x85\xc0\x0f\x88", "xxxxxx");
+        if (!c_site &&
+            at(im, o, "\x8b\xf8\x85\xc0\x0f\x88\xa5\x00\x00\x00", "xxxxxxxxxx")) {
+            if (++cc > 1 || !record(im, plan, o, "\x31\xc0", 2, L"alternate image status"))
+                return FALSE;
+        }
+        if (c_site) {
+            if (++cc > 1 || !record(im, plan, o + 12, "\x31\xc0", 2, L"alternate image status"))
+                return FALSE;
+        }
+    }
+    return a >= 1 && bb >= 1;
+}
+
+/* 10074-generation ci.dll: the reference media flip four conditional branches so the
+   certificate date and policy checks stop rejecting the image. Each site has to be
+   unique in the file, otherwise nothing is written. */
+static BOOL plan_ci_10074(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    DWORD found[4] = {NONE, NONE, NONE, NONE};
+    unsigned counts[4] = {0, 0, 0, 0};
+    for (DWORD o = 0; o + 16 <= im->size; ++o) {
+        /* branch 1: test r13, r13 ; je */
+        if (at(im, o, "\x48\x8b\x5d\x57\x4d\x85\xed\x74", "xxxxxxxx")) {
+            if (++counts[0] > 1) return FALSE;
+            found[0] = o + 7;
+        }
+        /* branch 2: test al, 1 ; jne */
+        if (at(im, o, "\x8b\x05\0\0\0\0\xa8\x01\x75", "xx????xxx")) {
+            if (++counts[1] > 1) return FALSE;
+            found[1] = o + 8;
+        }
+        /* branch 3: test cl, cl ; je ; or esi, 600000h */
+        if (at(im, o, "\x84\xc9\x74\x10\x81\xce", "xxxxxx")) {
+            if (++counts[2] > 1) return FALSE;
+            found[2] = o + 2;
+        }
+        /* branch 4: mov esi, [rsp+58h] ; test cl, cl ; je */
+        if (at(im, o, "\x8b\x74\x24\x58\x84\xc9\x74", "xxxxxxx")) {
+            if (++counts[3] > 1) return FALSE;
+            found[3] = o + 6;
+        }
+    }
+    unsigned edits = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        if (found[i] == NONE)
+            continue;
+        if (!record(im, plan, found[i], "\xeb", 1, L"CI certificate date branch"))
+            return FALSE;
+        ++edits;
+    }
+    return edits == 4;
 }
 
 static BOOL plan_boot(const Image *im, Plan *plan, BOOL loader)

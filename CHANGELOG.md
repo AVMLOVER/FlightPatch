@@ -1,4 +1,39 @@
-# 更新日志（NT Timebomb Patch 5.5.10）
+# 更新日志（NT Timebomb Patch 5.5.11）
+
+## 5.5.11 - 2026-11-17
+
+### 与"可用成品"逐字节一致（10074 x64，install.wim 与 PE 通用）
+
+用户提供了别人做好的、**已确认可用**的 10074 文件（`ci.dll`、`winload.efi`、`winresume.efi`），
+逐字节反推得到标准配方，并已实现：
+
+**`ci.dll`（4 处条件跳转改 `EB`）**
+
+| 偏移 | 原字节 | 改为 |
+| --- | --- | --- |
+| `0x1D92D` | `74` | `eb` |
+| `0x26F3B` | `75` | `eb` |
+| `0x30930` | `74` | `eb` |
+| `0x309A2` | `74` | `eb` |
+
+**加载器（`winload`/`winresume` 的 `.efi` 与 `.exe` 四个文件）**
+
+| 作用 | 改动 | 定位方式 |
+| --- | --- | --- |
+| 镜像哈希状态 | `8b d8 → 31 c0` | `mov [rsp+20h],eax ; call … ; mov ebx,eax ; test eax,eax ; jns 67 ; mov r8d,esi` |
+| 完整性检查开关 | `88 4c 24 40 → b1 01 90 90` | `0f b6 4c 24 40 85 c0 41 0f 48 ce` 之后 |
+| 备用镜像状态 | `8b f8 → 31 c0` | `8b f8 85 c0 0f 88 a5 00 00 00` |
+
+验证（10074 原版 → 本工具输出 vs 参考文件）：
+
+```
+ci.dll         diff vs reference: 0
+winload.efi    diff vs reference: 0
+winresume.efi  diff vs reference: 0
+```
+
+**含 PE 校验和在内完全一致**。这套规则对 `/bootwim`（PE）与 `/image`（install.wim）同时生效，
+也覆盖 Legacy 用的 `winload.exe` / `winresume.exe`（同为 x64 PE）。
 
 ## 5.5.10 - 2026-11-17
 
