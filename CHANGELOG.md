@@ -1,4 +1,22 @@
-# 更新日志（NT Timebomb Patch 5.4.4）
+# 更新日志（NT Timebomb Patch 5.4.5）
+
+## 5.4.5 - 2026-11-17
+
+### `/winpe ... /bootmgr-from VERIFIED_MEDIA_ROOT`
+
+针对 9841 这类"引导管理器布局比已验证集合更老、通用状态门放不过加载器"的情况，新增一个
+一步到位的替换开关：
+
+```bat
+nttimebomb /winpe D:\boot /bootmgr-from D:\Patched_14357.1000_WinPE
+```
+
+- 从给定目录拷贝 `bootmgr.efi` 与 `efi\boot\bootx64.efi`，覆盖目标介质上的同名文件；
+- 覆盖前自动保留 `FILE.bak`；
+- 其余文件（`cdboot*.efi`、`efisys*.bin`、`bootmgr`、`boot.wim`）仍按 `/winpe`、`/bootwim`
+  的结果保持不变。
+
+这样 9841 的 UEFI 可以用已验证的 14316 引导管理器启动，不必手工拷文件。
 
 ## 5.4.4 - 2026-11-17
 

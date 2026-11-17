@@ -696,12 +696,15 @@ static int help(void)
             L"The new workspace remains available for inspection or manual cleanup after any result.\n\n"
             L"TWO STANDALONE BOOT MANAGERS\n"
             L"WINPE BOOT CHAIN\n"
-            L"  nttimebomb /winpe PE_ROOT\n"
+            L"  nttimebomb /winpe PE_ROOT [/bootmgr-from VERIFIED_MEDIA_ROOT]\n"
             L"Patches every boot manager on the media (bootmgr.efi, efi\\boot\\bootx64.efi,\n"
             L"bootmgfw.efi, cdboot*.efi, memtest and the BIOS bootmgr) so the unmodified\n"
             L"boot.wim starts at the current date. The boot.wim is not touched. Secure Boot\n"
             L"must be off; every file keeps a FILE.bak. The BIOS container rebuild is\n"
-            L"experimental: verify a Legacy start in a virtual machine first.\n\n"            L"  nttimebomb /bootfiles INPUT_FOLDER /out NEW_FOLDER\n"
+            L"experimental: verify a Legacy start in a virtual machine first.\n"
+            L"/bootmgr-from copies bootmgr.efi and efi\\boot\\bootx64.efi from a verified\n"
+            L"medium (14316-14357) over older layouts such as 9841, whose boot manager no\n"
+            L"longer accepts the loader. The originals keep a FILE.bak.\n\n"            L"  nttimebomb /bootfiles INPUT_FOLDER /out NEW_FOLDER\n"
             L"Place bootmgr and bootmgr.efi together in INPUT_FOLDER. Both are verified before\n"
             L"the patched pair is written to a new folder. Deploy them to the matching media.\n\n"
             L"EXISTING OFFLINE MODES\n"
@@ -926,11 +929,40 @@ static unsigned winpe_patch_tree(BCRYPT_ALG_HANDLE algorithm, const wchar_t *roo
     return patched;
 }
 
+/* Replace a boot manager whose layout is older than the verified set with one that is
+   known to load the loader: the pair from a patched 14316-14357 medium. */
+static BOOL winpe_replace_manager(const wchar_t *root, const wchar_t *source)
+{
+    static const wchar_t *const pairs[2][2] = {
+        {L"bootmgr.efi", L"bootmgr.efi"},
+        {L"efi\\boot\\bootx64.efi", L"efi\\boot\\bootx64.efi"}
+    };
+    BOOL ok = TRUE;
+    for (unsigned i = 0; i < 2; ++i) {
+        wchar_t from[PATH_SIZE], to[PATH_SIZE];
+        if (!build_path(from, source, pairs[i][1]) || !build_path(to, root, pairs[i][0]) ||
+            GetFileAttributesW(from) == INVALID_FILE_ATTRIBUTES ||
+            GetFileAttributesW(to) == INVALID_FILE_ATTRIBUTES)
+            continue;
+        winpe_backup(to);
+        if (CopyFileW(from, to, FALSE))
+            wprintf(L"%ls <- %ls\n", to, from);
+        else {
+            fwprintf(stderr, L"Cannot replace %ls.\n", to);
+            ok = FALSE;
+        }
+    }
+    return ok;
+}
+
 static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
 {
-    wchar_t root[PATH_SIZE];
-    if (argc != 3 || !normalize(root, argv[2])) {
-        fwprintf(stderr, L"Usage: nttimebomb /winpe PE_ROOT\n");
+    wchar_t root[PATH_SIZE], source[PATH_SIZE];
+    BOOL replace = FALSE;
+    if (argc == 5 && !_wcsicmp(argv[3], L"/bootmgr-from") && normalize(source, argv[4]))
+        replace = TRUE;
+    if ((argc != 3 && !replace) || !normalize(root, argv[2])) {
+        fwprintf(stderr, L"Usage: nttimebomb /winpe PE_ROOT [/bootmgr-from VERIFIED_MEDIA_ROOT]\n");
         return 2;
     }
     fwprintf(stderr, L"Patching the boot managers breaks their Authenticode signature: Secure Boot must\n"
@@ -938,7 +970,13 @@ static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
                      L"EXPERIMENTAL: the BIOS bootmgr container is rebuilt as well; verify a Legacy\n"
                      L"start in a virtual machine before writing it to real media.\n"
                      L"Package the result with oscdimg -bootdata so the patched efisys.bin is used.\n");
-    return winpe_patch_tree(algorithm, root) ? 0 : 1;
+    unsigned patched = winpe_patch_tree(algorithm, root);
+    if (replace) {
+        wprintf(L"Replacing the boot managers older than the verified set:\n");
+        if (!winpe_replace_manager(root, source))
+            patched = 0;
+    }
+    return patched ? 0 : 1;
 }
 
 static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role, int rule)
