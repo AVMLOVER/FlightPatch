@@ -1006,8 +1006,17 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                 if (ok)
                     fwprintf(stderr, L"  CD boot application layout\n");
             } else {
+                /* The 9841 generation has its own verified three-edit layout; try it
+                   before the later rule so its two status clears are not missed. */
                 ok = image_open(&image, content.data, content.size) &&
-                     plan_winpe_manager(&image, &plan);
+                     plan_winpe_9841(&image, &plan);
+                if (ok)
+                    fwprintf(stderr, L"  9841-generation boot manager layout\n");
+                if (!ok) {
+                    plan = (Plan){0};
+                    ok = image_open(&image, content.data, content.size) &&
+                         plan_winpe_manager(&image, &plan);
+                }
             }
             if (!ok) {
                 /* The verified rule only covers the 14316-14357 layout. Other

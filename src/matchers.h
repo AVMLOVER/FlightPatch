@@ -714,6 +714,45 @@ static BOOL plan_winpe_cdboot(const Image *im, Plan *plan)
     return TRUE;
 }
 
+/* 32-bit boot managers of the 9841 generation. The published patch of this layout is
+   three edits (verified byte for byte against a known-good 9841 x86 boot manager):
+   clear the status of the two hash calls and make one status jump unconditional. */
+static BOOL plan_winpe_9841(const Image *im, Plan *plan)
+{
+    if (im->x64 || im->machine == IMAGE_FILE_MACHINE_ARM64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    DWORD first = NONE, second = NONE, third = NONE;
+    unsigned counts[3] = {0, 0, 0};
+    for (DWORD o = 0; o + 20 <= im->size; ++o) {
+        if (b[o] == 0xe8 && at(im, o + 5, "\x8b\xf0\x85\xf6\x79", "xxxxx") &&
+            at(im, o + 11, "\x8b\x4d\x08\x8b\xd6\x53\xe8", "xxxxxxx")) {
+            if (++counts[0] > 1)
+                return FALSE;
+            first = o + 5;
+        }
+        if (b[o] == 0xe8 && at(im, o + 5, "\x8b\xf0\x85\xf6\x78", "xxxxx") &&
+            at(im, o + 11, "\x8d\x4d\x98\xe8", "xxxx")) {
+            if (++counts[1] > 1)
+                return FALSE;
+            second = o + 5;
+        }
+        if (at(im, o, "\x8b\xd8\x85\xdb\x79", "xxxxx") &&
+            at(im, o + 6, "\x8b\x45\xc8\x8b\xd3\xff\x75\xe0", "xxxxxxxx")) {
+            if (++counts[2] > 1)
+                return FALSE;
+            third = o + 4;
+        }
+    }
+    if (counts[0] != 1 || counts[1] != 1 || counts[2] != 1)
+        return FALSE;
+    if (!record(im, plan, first, "\x31\xf6", 2, L"9841 hash status clear (jns form)") ||
+        !record(im, plan, second, "\x31\xf6", 2, L"9841 hash status clear (js form)") ||
+        !record(im, plan, third, "\xeb", 1, L"9841 status gate"))
+        return FALSE;
+    return TRUE;
+}
+
 /* Boot managers of 14316-14357 style builds. The published patch of this layout is
    four surgical edits, all verified against a known-good 14316 bootx64.efi:
 

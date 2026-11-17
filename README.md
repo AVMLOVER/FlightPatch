@@ -234,9 +234,12 @@ dependencies, notices, docs).
   virtual machine before writing real media.
 - VMware guests may panic in the monitor on Legacy starts of **99xx-series** builds
   only; fix the VM settings, not the media (see section 3).
-- **9841 UEFI**: its boot manager layout is older than the verified set, so the
-  generic gates do not let the loader through and UEFI stops at `0xc0000428`
-  (Legacy is fine). One step:
+- **9841 x86 UEFI** is patched natively: the three edits derived from a working
+  9841 x86 medium (two status clears and one `jns` to `jmp`) reproduce it byte for
+  byte.
+- **9841 x64 UEFI**: its boot manager layout is older than the verified set and the
+  32-bit edits do not exist there, so the generic gates do not let the loader through
+  and UEFI stops at `0xc0000428` (Legacy is fine). One step:
   `nttimebomb /winpe D:\boot /bootmgr-from D:\Patched_14357.1000_WinPE` copies the
   verified `bootmgr.efi` + `efi\boot\bootx64.efi` over the 9841 ones (originals keep a
   `FILE.bak`); keep 9841's `cdboot*.efi`, `efisys*.bin` and the `/bootwim` result, then
