@@ -1,4 +1,36 @@
-# 更新日志（NT Timebomb Patch 5.5.11）
+# 更新日志（NT Timebomb Patch 5.5.12）
+
+## 5.5.12 - 2026-11-17
+
+### Legacy 加载器（`winload.exe` / `winresume.exe`）也走同一配方
+
+之前 `/image` 对 `Windows\System32\winload.exe` 报 `Unsupported or ambiguous structure`，原因是
+规则里两处掩码长度写错（模式 11 字节、掩码写成 12；备用状态那段 8 字节、掩码写成 9），
+导致结构识别失败。修正后 Legacy 与 UEFI 用**同一套三处改动**：
+
+| 作用 | 文件 | 改动位置（文件偏移） |
+| --- | --- | --- |
+| 镜像哈希状态 | `winload.exe` | `0x4419F` `8b d8 → 31 c0` |
+| 完整性检查开关 | `winload.exe` | `0x44660` `88 4c 24 40 → b1 01 90 90` |
+| 备用镜像状态 | `winload.exe` | `0x45681` `8b f8 → 31 c0` |
+| 镜像哈希状态 | `winresume.exe` | `0x30783` |
+| 完整性检查开关 | `winresume.exe` | `0x30C38` |
+| 备用镜像状态 | `winresume.exe` | `0x318E8` |
+
+并且规则现在是**幂等**的（已打过补丁的文件能被识别为"已完成"，不会报错）。
+
+回归验证（UEFI 三个文件，与可用成品对比）：
+
+```
+ci.dll        diff: 0
+winload.efi   diff: 0
+winresume.efi diff: 0
+```
+
+### 移除 `mmc-*.exe` 残留
+
+`nttimebomb-mmc-{x86,x64,arm64}.exe` 及 `src/mmc.c`、`src/mmc_approval.h`、打包脚本中的相关条目
+全部删除（该功能已不再提供）。
 
 ## 5.5.11 - 2026-11-17
 

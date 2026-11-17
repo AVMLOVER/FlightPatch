@@ -523,37 +523,34 @@ static BOOL plan_loader_10074(const Image *im, Plan *plan)
 {
     if (!im->x64)
         return FALSE;
-    const BYTE *b = im->bytes;
     unsigned a = 0, bb = 0, cc = 0;
-    for (DWORD o = 0; o + 18 <= im->size; ++o) {
+    for (DWORD o = 0; o + 20 <= im->size; ++o) {
         /* A: "mov [rsp+20h], eax ; call ... ; mov ebx, eax ; test eax, eax ; jns" */
         if (at(im, o, "\x89\x44\x24\x20\xe8", "xxxxx") &&
-            at(im, o + 9, "\x8b\xd8\x85\xc0\x79\x67\x44\x8b\xc6", "xxxxxxxxx")) {
-            if (++a == 1 &&
+            (at(im, o + 9, "\x8b\xd8\x85\xc0\x79\x67\x44\x8b\xc6", "xxxxxxxxx") ||
+             at(im, o + 9, "\x31\xc0\x85\xc0\x79\x67\x44\x8b\xc6", "xxxxxxxxx"))) {
+            if (++a == 1 && !at(im, o + 9, "\x31\xc0", "xx") &&
                 !record(im, plan, o + 9, "\x31\xc0", 2, L"image hash status gate"))
                 return FALSE;
         }
         /* B: the integrity store right after the cmov (the first one only) */
-        if (at(im, o, "\x0f\xb6\x4c\x24\x40\x85\xc0\x41\x0f\x48\xce\x88\x4c\x24\x40", "xxxxxxxxxxxxxxx")) {
-            if (++bb > 1)
-                continue;
-            if (!record(im, plan, o + 11, "\xb1\x01\x90\x90", 4, L"loader integrity option"))
+        if (at(im, o, "\x0f\xb6\x4c\x24\x40\x85\xc0\x41\x0f\x48\xce", "xxxxxxxxxxx") &&
+            (at(im, o + 11, "\x88\x4c\x24\x40", "xxxx") ||
+             at(im, o + 11, "\xb1\x01\x90\x90", "xxxx"))) {
+            if (++bb == 1 && !at(im, o + 11, "\xb1\x01", "xx") &&
+                !record(im, plan, o + 11, "\xb1\x01\x90\x90", 4, L"loader integrity option"))
                 return FALSE;
         }
-        /* C: alternate status after the r15/r14 setup (or its distinct disp32 form) */
-        BOOL c_site = at(im, o, "\x45\x8b\xc4\x48\x8b\x48\x18\xe8", "xxxxxxxxx") &&
-                      at(im, o + 12, "\x8b\xf8\x85\xc0\x0f\x88", "xxxxxx");
-        if (!c_site &&
-            at(im, o, "\x8b\xf8\x85\xc0\x0f\x88\xa5\x00\x00\x00", "xxxxxxxxxx")) {
-            if (++cc > 1 || !record(im, plan, o, "\x31\xc0", 2, L"alternate image status"))
-                return FALSE;
-        }
-        if (c_site) {
-            if (++cc > 1 || !record(im, plan, o + 12, "\x31\xc0", 2, L"alternate image status"))
+        /* C: alternate status after the r15/r14 setup */
+        if (at(im, o, "\x45\x8b\xc4\x48\x8b\x48\x18\xe8", "xxxxxxxx") &&
+            (at(im, o + 12, "\x8b\xf8\x85\xc0\x0f\x88", "xxxxxx") ||
+             at(im, o + 12, "\x31\xc0\x85\xc0\x0f\x88", "xxxxxx"))) {
+            if (++cc == 1 && !at(im, o + 12, "\x31\xc0", "xx") &&
+                !record(im, plan, o + 12, "\x31\xc0", 2, L"alternate image status"))
                 return FALSE;
         }
     }
-    return a >= 1 && bb >= 1;
+    return a >= 1 && bb >= 1 && cc >= 1;
 }
 
 /* 10074-generation ci.dll: the reference media flip four conditional branches so the

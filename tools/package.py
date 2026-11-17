@@ -16,7 +16,6 @@ def include(path):
     files[path.relative_to(root).as_posix()]=path.read_bytes()
 
 for name in ['nttimebomb-x86.exe','nttimebomb-x64.exe','nttimebomb-arm64.exe',
-             'nttimebomb-mmc-x86.exe','nttimebomb-mmc-x64.exe','nttimebomb-mmc-arm64.exe',
              'nttimebomb.cmd','flightpatch.cmd',
              'README.md','TESTING.md','LICENSE']:
     include(root/name)
