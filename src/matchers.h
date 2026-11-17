@@ -561,7 +561,7 @@ static BOOL plan_media_10074(const Image *im, Plan *plan)
     if (!im->x64)
         return FALSE;
     const BYTE *b = im->bytes;
-    DWORD sites[64], callees[64];
+    DWORD sites[64], callees[64], bsite = NONE;
     unsigned n = 0, bb = 0, cc = 0;
     for (DWORD o = 0; o + 24 <= im->size; ++o) {
         DWORD status = NONE, call = NONE;
@@ -585,9 +585,12 @@ static BOOL plan_media_10074(const Image *im, Plan *plan)
         }
         if (at(im, o, "\x0f\xb6\x4c\x24\x40\x85\xc0\x41\x0f\x48\xce", "xxxxxxxxxxx") &&
             (at(im, o + 11, "\x88\x4c\x24\x40", "xxxx") || at(im, o + 11, "\xb1\x01\x90\x90", "xxxx"))) {
-            if (++bb == 1 && !at(im, o + 11, "\xb1\x01", "xx") &&
-                !record(im, plan, o + 11, "\xb1\x01\x90\x90", 4, L"reference integrity option"))
-                return FALSE;
+            if (++bb == 1) {
+                bsite = o;
+                if (!at(im, o + 11, "\xb1\x01", "xx") &&
+                    !record(im, plan, o + 11, "\xb1\x01\x90\x90", 4, L"reference integrity option"))
+                    return FALSE;
+            }
         }
         if (at(im, o, "\x45\x8b\xc4\x48\x8b\x48\x18\xe8", "xxxxxxxx") &&
             (at(im, o + 12, "\x8b\xf8\x85\xc0\x0f\x88", "xxxxxx") ||
@@ -597,14 +600,17 @@ static BOOL plan_media_10074(const Image *im, Plan *plan)
                 return FALSE;
         }
     }
-    /* Only the status checks that call the same validation routine belong to the same
-       decision; the reference clears exactly those (three of them on the 10074 medium). */
+    /* The reference clears the checks that sit in the same function as the integrity
+       switch: only sites within one function-sized window are considered, and among them
+       the routine that guards the most checks wins. */
     DWORD chosen = NONE;
-    unsigned best = 1;
+    unsigned best = 0;
     for (unsigned i = 0; i < n; ++i) {
+        if (bsite == NONE || sites[i] + 0x2000 < bsite || sites[i] > bsite + 0x2000)
+            continue;
         unsigned same = 0;
         for (unsigned j = 0; j < n; ++j)
-            if (callees[j] == callees[i])
+            if (callees[j] == callees[i] && sites[j] + 0x2000 >= bsite && sites[j] <= bsite + 0x2000)
                 ++same;
         if (same > best) {
             best = same;
@@ -613,7 +619,8 @@ static BOOL plan_media_10074(const Image *im, Plan *plan)
     }
     unsigned cleared = 0;
     for (unsigned i = 0; i < n; ++i) {
-        if (callees[i] != chosen)
+        if (callees[i] != chosen ||
+            (bsite != NONE && (sites[i] + 0x2000 < bsite || sites[i] > bsite + 0x2000)))
             continue;
         if (!record(im, plan, sites[i], "\x31\xc0", 2, L"reference hash status gate"))
             return FALSE;
