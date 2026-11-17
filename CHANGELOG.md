@@ -1,4 +1,25 @@
-# 更新日志（NT Timebomb Patch 5.5.4）
+# 更新日志（NT Timebomb Patch 5.5.5）
+
+## 5.5.5 - 2026-11-17
+
+### `cdboot` 与 El Torito 内嵌副本也清空 `0C0000428h`
+
+"选完启动项立即出现 Recovery、没有 Logo"这个现象，最可能是**光盘引导程序 cdboot** 在
+校验 `bootmgr.efi` 时就失败（cdboot 是最先执行的那个，它自己的错误界面正是这个）。
+
+10074 的 `cdboot.efi` 里有 **12 处** `mov eax, 0C0000428h`，之前只改了 2 处 `jns` 门。现在：
+
+- `cdboot.efi`、`cdboot_noprompt.efi`：2 处 `jns` 门 + **12 处状态赋值**（共 64 字节变化）；
+- `efisys.bin` / `efisys_noprompt.bin` 内嵌的那份同样处理（容器大小不变，各 64 字节）。
+
+### 覆盖汇总（10074 x64，原版文件）
+
+| 文件 | 改动 |
+| --- | --- |
+| `bootmgr.efi` | 7 门 + 惯用式 + 16 状态（104 字节） |
+| `efi\boot\bootx64.efi` | 4 门 + 惯用式 + 14 状态（86 字节） |
+| `cdboot.efi` | 2 门 + 12 状态（64 字节） |
+| `efisys.bin` 内嵌副本 | 2 门 + 12 状态（64 字节） |
 
 ## 5.5.4 - 2026-11-17
 

@@ -832,6 +832,7 @@ static BOOL winpe_patch_container(BCRYPT_ALG_HANDLE algorithm, const wchar_t *pa
         }
         if (!known || !plan.count)
             continue;
+        plan_winpe_status_all_x64(&image, &plan);
         for (unsigned e = 0; e < plan.count; ++e) {
             const Change *change = &plan.edits[e];
             memcpy(content.data + o + change->at, change->bytes, change->length);
@@ -1024,6 +1025,9 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                      plan_winpe_cdboot(&image, &plan);
                 if (ok)
                     fwprintf(stderr, L"  CD boot application layout\n");
+                if (image_open(&image, content.data, content.size) &&
+                    plan_winpe_status_all_x64(&image, &plan))
+                    ok = TRUE;
             } else {
                 /* The 9841 generation has its own verified three-edit layout; try it
                    before the later rule so its two status clears are not missed. */
