@@ -1,4 +1,26 @@
-# 更新日志（NT Timebomb Patch 5.4.3）
+# 更新日志（NT Timebomb Patch 5.4.4）
+
+## 5.4.4 - 2026-11-17
+
+### `/winpe`：规则按文件角色选择（修正误判）
+
+之前 cdboot 规则会在 `bootmgr.efi` / `bootx64.efi` / `memtest.efi` 里"碰巧"命中，
+把引导管理器当成 CD 引导程序打了 2 处补丁（9841 实测输出里出现
+`CD boot application layout`）。现在：
+
+- `cdboot.efi`、`cdboot_noprompt.efi` 以及 `efisys*.bin` 里内嵌的副本 → **cdboot 规则**（2 处）；
+- `bootmgr.efi`、`bootx64.efi`、`bootia32.efi`、`bootmgfw.efi`、`memtest*` → **引导管理器规则**
+  （14316–14357 用已验证的 4 处；其他布局回退到通用状态门）；
+- BIOS `bootmgr` 容器 → 通用规则。
+
+9841 实测（修正后）：`bootmgr.efi` `0x5BB89/0x5C50E/0x5CF4C`、`bootx64.efi`
+`0x41A8D/0x42412/0x42E50`、`cdboot*.efi` 各 2 处、`efisys*.bin` 内嵌 2 处。
+
+### 已知限制：9841 的 UEFI 启动仍被拒
+
+9841 的 `bootmgr.efi` 属于早期布局，通用状态门不足以放行 wim 里的 `winload.efi`，
+UEFI 启动会停在 `0xc0000428`（"The digital signature for this file couldn't be verified"），
+Legacy 正常。临时可用已验证的 14316 引导管理器替换（见 README「9841 UEFI note」）。
 
 ## 5.4.3 - 2026-11-17
 

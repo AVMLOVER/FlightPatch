@@ -234,6 +234,12 @@ dependencies, notices, docs).
   virtual machine before writing real media.
 - VMware guests may panic in the monitor on Legacy starts of **99xx-series** builds
   only; fix the VM settings, not the media (see section 3).
+- **9841 UEFI**: its boot manager layout is older than the verified set, so the
+  generic gates do not let the loader through and UEFI stops at `0xc0000428`
+  (Legacy is fine). Workaround: copy a verified patched boot manager pair from
+  `Patched_14357.1000_WinPE` (`bootmgr.efi` and `efi\boot\bootx64.efi`) over the
+  9841 ones and rebuild the ISO; keep 9841's `cdboot*.efi`, `efisys*.bin` and
+  `boot.wim` as produced by `/winpe` and `/bootwim`.
 - 32-bit preview `ci.dll` layouts are covered for 9841, 9860, 9926, 10074, 10143,
   10525, 10546, 10587 and 14347; other layouts are refused rather than guessed.
 - Windows Defender on preview builds is out of scope.

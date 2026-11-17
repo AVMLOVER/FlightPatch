@@ -726,7 +726,7 @@ static int help(void)
     return 0;
 }
 
-static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role, BOOL manager_rule);
+static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role, int rule);
 
 /* /winpe - patch the boot chain of a WinPE media tree so the unmodified boot.wim
    starts at the current date.
@@ -891,7 +891,8 @@ static unsigned winpe_patch_tree(BCRYPT_ALG_HANDLE algorithm, const wchar_t *roo
         }
         winpe_backup(path);
         wprintf(L"%ls\n", path);
-        if (bootmgr_patch(algorithm, path, BOOT, TRUE))
+        BOOL cdboot = wcsstr(winpe_files[i], L"cdboot") != NULL;
+        if (bootmgr_patch(algorithm, path, BOOT, cdboot ? 2 : 1))
             ++patched;
         else {
             if (i >= 1 && i <= 3)
@@ -916,7 +917,7 @@ static unsigned winpe_patch_tree(BCRYPT_ALG_HANDLE algorithm, const wchar_t *roo
     if (build_path(legacy, root, L"bootmgr") && GetFileAttributesW(legacy) != INVALID_FILE_ATTRIBUTES) {
         winpe_backup(legacy);
         wprintf(L"%ls\n", legacy);
-        if (bootmgr_patch(algorithm, legacy, LEGACY, FALSE))
+        if (bootmgr_patch(algorithm, legacy, LEGACY, 0))
             ++patched;
         else
             ++skipped;
@@ -940,7 +941,7 @@ static int run_winpe(BCRYPT_ALG_HANDLE algorithm, int argc, wchar_t **argv)
     return winpe_patch_tree(algorithm, root) ? 0 : 1;
 }
 
-static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role, BOOL manager_rule)
+static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role role, int rule)
 {
     HANDLE file = spp_open(path, GENERIC_READ | GENERIC_WRITE | WRITE_DAC | WRITE_OWNER, OPEN_EXISTING);
     if (file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED)
@@ -956,19 +957,19 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
     if (ok) {
         if (role == LEGACY) {
             ok = patch_legacy(&content) && digest(algorithm, content.data, content.size, content.sha);
-        } else if (manager_rule) {
+        } else if (rule) {
             Image image;
             WORD machine = 0;
             BOOL changed = FALSE;
             Plan plan = {0};
-            ok = image_open(&image, content.data, content.size) &&
-                 plan_winpe_manager(&image, &plan);
-            if (!ok) {
-                plan = (Plan){0};
+            if (rule == 2) {
                 ok = image_open(&image, content.data, content.size) &&
                      plan_winpe_cdboot(&image, &plan);
                 if (ok)
                     fwprintf(stderr, L"  CD boot application layout\n");
+            } else {
+                ok = image_open(&image, content.data, content.size) &&
+                     plan_winpe_manager(&image, &plan);
             }
             if (!ok) {
                 /* The verified rule only covers the 14316-14357 layout. Other
