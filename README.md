@@ -83,7 +83,8 @@ Boot manager layouts the rules recognise (each edit must be unique in the file):
 | 9841 x86 | 2 status clears + 1 status gate, byte identical to a known-good medium | verified |
 | 9841 x64 | 2 paired status gates inside the hash body | **boot tested, works** |
 | 9926 x86, 10074 x86 | same call sites, status cleared before the flag test | structural |
-| 10074 x64 | single status gate inside the hash body | structural |
+| 9879 / 10074 / 10587 x64 | every status gate of the hash body error block (7 and 4 gates on 10074) | structural |
+| 10546 x64 (`bootmgr.efi` only) / 14300 x64 | generic status gates | structural |
 | other previews | generic status gates | structural |
 
 **Packaging warning**: the UEFI boot image is a copy stored in the ISO itself, not

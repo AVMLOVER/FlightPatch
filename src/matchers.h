@@ -816,21 +816,36 @@ static BOOL plan_winpe_late_x64(const Image *im, Plan *plan)
     if (!im->x64)
         return FALSE;
     const BYTE *b = im->bytes;
-    DWORD site = NONE;
-    unsigned count = 0;
+    DWORD target = NONE;
+    unsigned anchors = 0;
     for (DWORD o = 0; o + 0x20 < im->size; ++o) {
         if (!at(im, o, "\x8b\xd8\x85\xc0\x0f\x88", "xxxxxx"))
             continue;
         if (!at(im, o + 10, "\x41\x8b", "xx") || b[o + 13] != 0x08 ||
             !at(im, o + 14, "\x41\xb9\x02\x00\x01\x00", "xxxxxx"))
             continue;
-        if (++count > 1)
+        DWORD candidate = (DWORD)(o + 10 + (int32_t)u32(b + o + 6));
+        if (target != NONE && candidate != target)
             return FALSE;
-        site = o + 4;
+        target = candidate;
+        ++anchors;
     }
-    if (count != 1)
+    if (!anchors)
         return FALSE;
-    if (!record(im, plan, site, "\x90\x90\x90\x90\x90\x90", 6, L"late hash check gate"))
+    /* Every status gate of this validation body that diverts to the same error block is
+       part of the same decision, so all of them are released. */
+    unsigned gates = 0;
+    for (DWORD o = 0; o + 10 < im->size; ++o) {
+        if (!at(im, o, "\x8b\xd8\x85\xc0\x0f\x88", "xxxxxx"))
+            continue;
+        if ((DWORD)(o + 10 + (int32_t)u32(b + o + 6)) != target)
+            continue;
+        if (++gates > 12)
+            return FALSE;
+        if (!record(im, plan, o + 4, "\x90\x90\x90\x90\x90\x90", 6, L"late hash check gate"))
+            return FALSE;
+    }
+    if (gates < 2)
         return FALSE;
     return TRUE;
 }
