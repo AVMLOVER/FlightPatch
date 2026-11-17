@@ -1043,12 +1043,22 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                     if (ok)
                         fwprintf(stderr, L"  9841-generation x64 boot manager layout\n");
                 }
+                BOOL keep_verified = ok;
                 if (!ok) {
                     plan = (Plan){0};
                     ok = image_open(&image, content.data, content.size) &&
                          plan_winpe_late_x64(&image, &plan);
                     if (ok)
                         fwprintf(stderr, L"  late x64 boot manager layout\n");
+                }
+                /* The status producer is released for the newer layouts and whenever no
+                   other rule matched; the verified 9841 layouts stay exactly as tested. */
+                if (image_open(&image, content.data, content.size) &&
+                    (!keep_verified || !ok)) {
+                    if (plan_winpe_signature_x64(&image, &plan)) {
+                        wprintf(L"  image hash status becomes success\n");
+                        ok = TRUE;
+                    }
                 }
             }
             if (!ok) {

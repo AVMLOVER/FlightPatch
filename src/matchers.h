@@ -835,7 +835,14 @@ static BOOL plan_winpe_late_x64(const Image *im, Plan *plan)
     /* Every status gate of this validation body that diverts to the same error block is
        part of the same decision, so all of them are released. */
     unsigned gates = 0;
+    DWORD status = NONE;
+    unsigned statuses = 0;
     for (DWORD o = 0; o + 10 < im->size; ++o) {
+        if (at(im, o, "\x85\xc0\x75\x0a\xb8\x28\x04\x00\xc0", "xxxxxxxxxx")) {
+            if (++statuses > 1)
+                return FALSE;
+            status = o + 4;
+        }
         if (!at(im, o, "\x8b\xd8\x85\xc0\x0f\x88", "xxxxxx"))
             continue;
         if ((DWORD)(o + 10 + (int32_t)u32(b + o + 6)) != target)
@@ -846,6 +853,33 @@ static BOOL plan_winpe_late_x64(const Image *im, Plan *plan)
             return FALSE;
     }
     if (gates < 2)
+        return FALSE;
+    if (status != NONE &&
+        !record(im, plan, status, "\x31\xc0\x90\x90\x90", 5, L"image hash status becomes success"))
+        return FALSE;
+    return TRUE;
+}
+
+/* Every one of these boot managers reports a failed image validation with the same
+   idiom: "test eax,eax ; jne ok ; mov eax, 0C0000428h". It is unique in the file, so
+   the status is turned into success instead of returning STATUS_INVALID_IMAGE_HASH. */
+static BOOL plan_winpe_signature_x64(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    DWORD site = NONE;
+    unsigned count = 0;
+    for (DWORD o = 0; o + 16 <= im->size; ++o) {
+        if (!at(im, o, "\x85\xc0\x75\x0a\xb8\x28\x04\x00\xc0", "xxxxxxxxxx"))
+            continue;
+        if (++count > 1)
+            return FALSE;
+        site = o + 4;
+    }
+    if (count != 1)
+        return FALSE;
+    if (!record(im, plan, site, "\x31\xc0\x90\x90\x90", 5, L"image hash status becomes success"))
         return FALSE;
     return TRUE;
 }
