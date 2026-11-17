@@ -237,9 +237,10 @@ dependencies, notices, docs).
 - **9841 x86 UEFI** is patched natively: the three edits derived from a working
   9841 x86 medium (two status clears and one `jns` to `jmp`) reproduce it byte for
   byte.
-- **9841 x64 UEFI**: its boot manager layout is older than the verified set and the
-  32-bit edits do not exist there, so the generic gates do not let the loader through
-  and UEFI stops at `0xc0000428` (Legacy is fine). One step:
+- **9841 x64 UEFI**: the 32-bit recipe does not exist in this code, so the rule instead
+  NOPs the pair of identical `js` status checks inside the hash validation body (they
+  are 0x1A bytes apart and divert to the same error block). This edit is
+  **experimental** and not yet boot-tested. If UEFI still stops at `0xc0000428`, use:
   `nttimebomb /winpe D:\boot /bootmgr-from D:\Patched_14357.1000_WinPE` copies the
   verified `bootmgr.efi` + `efi\boot\bootx64.efi` over the 9841 ones (originals keep a
   `FILE.bak`); keep 9841's `cdboot*.efi`, `efisys*.bin` and the `/bootwim` result, then

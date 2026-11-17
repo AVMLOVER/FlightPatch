@@ -1017,6 +1017,13 @@ static BOOL bootmgr_patch(BCRYPT_ALG_HANDLE algorithm, const wchar_t *path, Role
                     ok = image_open(&image, content.data, content.size) &&
                          plan_winpe_manager(&image, &plan);
                 }
+                if (!ok) {
+                    plan = (Plan){0};
+                    ok = image_open(&image, content.data, content.size) &&
+                         plan_winpe_9841_x64(&image, &plan);
+                    if (ok)
+                        fwprintf(stderr, L"  9841-generation x64 boot manager layout\n");
+                }
             }
             if (!ok) {
                 /* The verified rule only covers the 14316-14357 layout. Other

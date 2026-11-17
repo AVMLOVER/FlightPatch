@@ -753,6 +753,44 @@ static BOOL plan_winpe_9841(const Image *im, Plan *plan)
     return TRUE;
 }
 
+/* 64-bit boot managers of the 9841 generation. The x86 recipe does not exist in this
+   code, and the hash validation is entered through an indirect pointer, so the rule
+   works on the validation body itself: it holds a pair of identical status tests
+   ("mov ebx,eax ; test eax,eax ; js error") 0x1A bytes apart that divert to the same
+   error block. Making both jumps fall through keeps the success path. The pair has to
+   be unique in the file, otherwise nothing is written. */
+static BOOL plan_winpe_9841_x64(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    const BYTE *b = im->bytes;
+    DWORD first = NONE, second = NONE;
+    unsigned pairs = 0;
+    for (DWORD o = 0; o + 0x2A < im->size; ++o) {
+        if (!at(im, o, "\x8b\xd8\x85\xc0\x0f\x88", "xxxxxx") ||
+            !at(im, o + 10, "\x48\x8b\x4c\x24\x78", "xxxxx"))
+            continue;
+        if (!at(im, o + 0x1A, "\x8b\xd8\x85\xc0\x0f\x88", "xxxxxx"))
+            continue;
+        DWORD target = (DWORD)(o + 10 + (int32_t)u32(b + o + 6));
+        DWORD other = (DWORD)(o + 0x1A + 10 + (int32_t)u32(b + o + 0x1A + 6));
+        if (target != other)
+            continue;
+        if (++pairs > 1)
+            return FALSE;
+        first = o + 4;
+        second = o + 0x1A + 4;
+    }
+    if (pairs != 1)
+        return FALSE;
+    if (!record(im, plan, first, "\x90\x90\x90\x90\x90\x90", 6,
+                L"9841 hash check gate") ||
+        !record(im, plan, second, "\x90\x90\x90\x90\x90\x90", 6,
+                L"9841 hash check gate (second)"))
+        return FALSE;
+    return TRUE;
+}
+
 /* Boot managers of 14316-14357 style builds. The published patch of this layout is
    four surgical edits, all verified against a known-good 14316 bootx64.efi:
 
