@@ -838,7 +838,7 @@ static BOOL plan_winpe_late_x64(const Image *im, Plan *plan)
     DWORD status = NONE;
     unsigned statuses = 0;
     for (DWORD o = 0; o + 10 < im->size; ++o) {
-        if (at(im, o, "\x85\xc0\x75\x0a\xb8\x28\x04\x00\xc0", "xxxxxxxxxx")) {
+        if (at(im, o, "\x85\xc0\x75\x0a\xb8\x28\x04\x00\xc0", "xxxxxxxxx")) {
             if (++statuses > 1)
                 return FALSE;
             status = o + 4;
@@ -871,7 +871,7 @@ static BOOL plan_winpe_signature_x64(const Image *im, Plan *plan)
     DWORD site = NONE;
     unsigned count = 0;
     for (DWORD o = 0; o + 16 <= im->size; ++o) {
-        if (!at(im, o, "\x85\xc0\x75\x0a\xb8\x28\x04\x00\xc0", "xxxxxxxxxx"))
+        if (!at(im, o, "\x85\xc0\x75\x0a\xb8\x28\x04\x00\xc0", "xxxxxxxxx"))
             continue;
         if (++count > 1)
             return FALSE;
