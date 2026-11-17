@@ -458,6 +458,37 @@ static BOOL plan_file_revocation(const Image *im, Plan *plan)
     return TRUE;
 }
 
+/* The loaders themselves produce the two CI statuses we care about:
+   STATUS_IMAGE_CERT_EXPIRED (0C0000605h) once in each loader, and
+   STATUS_INVALID_IMAGE_HASH (0C0000428h) from many early-exit paths. Zeroing the
+   destination register makes those paths return success instead. */
+static BOOL plan_loader_status_sweep(const Image *im, Plan *plan)
+{
+    const BYTE *b = im->bytes;
+    static const char expired[] = "\x05\x06\x00\xc0";
+    static const char invalid[] = "\x28\x04\x00\xc0";
+    unsigned count = 0;
+    for (DWORD o = 0; o + 5 <= im->size; ++o) {
+        if (b[o] < 0xb8 || b[o] > 0xbf)
+            continue;
+        BOOL expired_hit = at(im, o + 1, expired, "xxxx");
+        BOOL invalid_hit = !expired_hit && at(im, o + 1, invalid, "xxxx");
+        if (!expired_hit && !invalid_hit)
+            continue;
+        if (++count > 48)
+            return FALSE;
+        char patch[5];
+        patch[0] = 0x31;
+        patch[1] = (char)(0xc0 | (b[o] & 7));
+        patch[2] = patch[3] = patch[4] = (char)0x90;
+        if (!record(im, plan, o, patch, 5,
+                    expired_hit ? L"expired status becomes success"
+                                : L"invalid image hash status becomes success"))
+            return FALSE;
+    }
+    return count > 0;
+}
+
 static BOOL plan_boot(const Image *im, Plan *plan, BOOL loader)
 {
     static const char oid[] = "1.3.6.1.4.1.311.61.4.1";

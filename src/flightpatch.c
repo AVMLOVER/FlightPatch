@@ -191,6 +191,8 @@ static BOOL patch_pe(BYTE *data, DWORD size, Role role, WORD *machine, BOOL *cha
     if (!image_open(&im, data, size))
         return FALSE;
     Plan plan = {0};
+    if (role == LOADER)
+        plan_loader_status_sweep(&im, &plan);
     BOOL valid = role == CI ? plan_ci(&im, &plan) :
                  role == KERNEL ? plan_kernel(&im, &plan) :
                  role == HVLOADER ? plan_hvloader(&im, &plan) && plan_boot(&im, &plan, TRUE) :
