@@ -213,10 +213,19 @@ static BOOL patch_pe(BYTE *data, DWORD size, Role role, WORD *machine, BOOL *cha
             plan = (Plan){0};
             valid = plan_ci(&im, &plan);
         }
-    } else
-        valid = role == KERNEL ? plan_kernel(&im, &plan) :
-                 role == HVLOADER ? plan_hvloader(&im, &plan) && plan_boot(&im, &plan, TRUE) :
-                 plan_boot(&im, &plan, role == LOADER);
+    } else if (role == KERNEL) {
+        valid = plan_kernel(&im, &plan);
+    } else if (role == HVLOADER) {
+        valid = plan_hvloader(&im, &plan) && plan_boot(&im, &plan, TRUE);
+    } else {
+        /* Keep every layout that is already recognised; only when the classic matcher
+           gives up is the policy-engine variant tried. */
+        valid = plan_boot(&im, &plan, role == LOADER);
+        if (!valid) {
+            plan = (Plan){0};
+            valid = plan_boot_policy(&im, &plan);
+        }
+    }
     if (!valid || (!plan.count && !plan.existing))
         return FALSE;
 

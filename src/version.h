@@ -3,7 +3,7 @@
 
 #define NTTP_VERSION_MAJOR 6
 #define NTTP_VERSION_MINOR 0
-#define NTTP_VERSION_PATCH 1
+#define NTTP_VERSION_PATCH 2
 
 #define NTTP_STRINGIZE_IMPL(value) #value
 #define NTTP_STRINGIZE(value) NTTP_STRINGIZE_IMPL(value)

@@ -193,8 +193,23 @@ static BOOL offline_probe(BCRYPT_ALG_HANDLE algorithm, const OfflineFile *spec, 
     BOOL changed;
     ok = spec->role == LEGACY ? patch_legacy(&edit->after) :
          patch_pe(edit->after.data, edit->after.size, spec->role, &edit->after.machine, &changed);
-    if (!ok || !digest(algorithm, edit->after.data, edit->after.size, edit->after.sha)) {
+    if (!ok) {
+        /* The boot manager copies are auxiliary: a layout this package does not know
+           must not abort the whole image, it is reported and left alone. */
+        if (spec->role == BOOT) {
+            wprintf(L"%ls\n  No supported structure for this mode. File left unchanged.\n", edit->path);
+            --*count;
+            CloseHandle(file);
+            free(edit->after.data);
+            free(edit->before.data);
+            memset(edit, 0, sizeof *edit);
+            return TRUE;
+        }
         fwprintf(stderr, L"Unsupported or ambiguous structure in %ls.\n", edit->path);
+        return FALSE;
+    }
+    if (!digest(algorithm, edit->after.data, edit->after.size, edit->after.sha)) {
+        fwprintf(stderr, L"Cannot hash the patched image %ls.\n", edit->path);
         return FALSE;
     }
     if (target && !spec->architecture_neutral && edit->after.machine != target) {

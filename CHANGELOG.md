@@ -1,4 +1,45 @@
-# 更新日志（NT Timebomb Patch 6.0.1）
+# 更新日志（NT Timebomb Patch 6.0.2）
+
+## 6.0.2 - 2026-11-20
+
+### 10546 的 `bootmgfw.efi`：策略引擎布局
+
+10546 的 UEFI 引导管理器（1,640,272 B）与同 build 的 `bootmgr.efi`（1,152,784 B）不是同一份代码：
+它把"flight signed / integrity"的判断交给**策略引擎查询**，经典匹配（基于 OID 锚点的
+`find_main_hash`）因此找不到唯一命中，整个 `/image` 会在这里中止。
+
+新判定 `plan_boot_policy`（仅在经典匹配失败后尝试，不改变已识别 build 的行为）：
+
+```
+mov edx, 16000048h / 16000049h / 1600007eh   ← 策略查询
+call query
+cmp dword [rsp+24h], 0
+jge ok
+mov byte [rsp+20h], 0        ← 失败时把结果置 0
+```
+
+把最后那条的立即数改成 `1`，等于让每个策略查询都回答"是"（等价于旧布局里"清状态"的效果）。
+
+实测 10546 原版：命中 `0xCE021`、`0xCE059`、`0xCE0B9`（三处策略字节），其余字节不变；
+整套 `/image` 现在能完整跑通（`Verified offline updates`）。
+
+### `/image` 不再因为一个引导管理器不认识就整体中止
+
+BOOT 角色的文件（`bootmgfw.efi`、`bootmgr.efi`、`memtest.efi`、PCAT 的 `bootmgr`/`memtest.exe`）
+属于辅助文件：匹配不到时打印 `No supported structure for this mode. File left unchanged.`
+并继续处理其余文件。CI 与加载器仍然严格要求命中。
+
+### 10546 整套识别结果（`/image`）
+
+| 文件 | 结果 |
+| --- | --- |
+| `ci.dll` | `0x27E88` 过期门 + 两处日期分支 |
+| 四个加载器（`System32` 与 `System32\Boot` 各一份） | 各 3 处（哈希门 / 完整性开关 / 备用状态） |
+| `Windows\Boot\EFI\bootmgfw.efi` | 3 处策略字节（新判定） |
+| `Windows\Boot\EFI\bootmgr.efi` | 哈希门 + 启动应用状态 + catalog 门 |
+| `Windows\Boot\EFI\memtest.efi` | 哈希门 + 备用状态 + 0603 |
+| `Windows\Boot\PCAT\bootmgr` | 容器重建（哈希门 / 启动应用状态 / catalog 门） |
+| `Windows\Boot\PCAT\memtest.exe` | 哈希门 + catalog 门 |
 
 ## 6.0.1 - 2026-11-17
 

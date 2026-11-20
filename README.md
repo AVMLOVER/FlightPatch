@@ -1,4 +1,4 @@
-# NT Timebomb Patch 6.0.0
+# NT Timebomb Patch 6.0.2
 
 Offline servicing for FlightSigned Windows previews: the CI build expiry, the signed
 boot chain of a WinPE/ISO medium, the licensing side, and the media build itself.
@@ -64,7 +64,11 @@ generic gates or leaves the file alone.
 3. **Producer walk** (14951 and close builds): for every `mov reg, 0C0000605h` producer,
    walk back to the nearest `test cl, cl ; je` and turn the `je` into an unconditional
    skip.
-4. **Classic planner**: the historical generic rule, plus `plan_umci`.
+4. **Classic planner**: the historical generic rule, plus `plan_umci`;
+5. **Policy engine** (10546 and close builds): the boot manager asks the policy engine
+   (`16000048h` / `16000049h` / `1600007eh`) and stores the answer with
+   `mov byte [rsp+20h], 0` on failure; that immediate is turned into `1` so every query
+   answers yes. Only used when the classic matcher has already failed.
 
 ### 3.2 Loaders (`winload` / `winresume`, `.efi` and `.exe`)
 
@@ -104,6 +108,7 @@ generic gates or leaves the file alone.
 | 14300 x64 | late CI recipe, `ci.dll` **byte identical** to the old patched set | reference media recipe |
 | 14372 x64 | late CI recipe | boot managers matched, BIOS `bootmgr` untouched |
 | 14951 x64 | producer-walk CI + reference loaders | boot managers matched, BIOS `bootmgr` untouched |
+| 10546 x64 | late CI recipe + structural loaders; policy-engine `bootmgfw.efi` (3 policy bytes) | reference media recipe |
 
 "Byte identical" means the resulting file equals a known-bootable reference including
 the PE checksum; the only differences that remain are the reference's re-signed
@@ -118,6 +123,9 @@ certificate blob, which cannot and need not be reproduced.
   boot-tested reference exists for those builds yet.
 - Builds whose `ci.dll` predates the four-branch layout and lacks both late signatures
   fall back to the classic planner; if that fails the file is left untouched.
+- In `/image`, a boot-manager file (BOOT role) that no rule recognises is reported and
+  skipped (`File left unchanged`) instead of aborting the whole servicing run; CI and
+  the loaders still have to match.
 
 ---
 

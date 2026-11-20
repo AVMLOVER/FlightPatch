@@ -626,6 +626,33 @@ static BOOL plan_media_10074(const Image *im, Plan *plan)
     return cleared >= 1 && bb >= 1;
 }
 
+/* Newer boot managers answer the "flight signing / integrity" questions through the
+   policy engine: "mov edx, 16000048h ; call query ; cmp result, 0 ; jge ok ; mov byte
+   [rsp+20h], 0". Forcing that stored byte to one makes every answer positive, which is
+   what the reference patches achieve on the older layouts. */
+static BOOL plan_boot_policy(const Image *im, Plan *plan)
+{
+    if (!im->x64)
+        return FALSE;
+    unsigned edits = 0;
+    for (DWORD o = 0; o + 0x40 <= im->size; ++o) {
+        if (!at(im, o, "\xba", "x"))
+            continue;
+        DWORD id = u32(im->bytes + o + 1);
+        if (id != 0x16000048u && id != 0x16000049u && id != 0x1600007eu)
+            continue;
+        for (DWORD p = o + 5; p + 8 <= o + 0x40; ++p) {
+            if (at(im, p, "\xc6\x44\x24\x20\x00", "xxxxx")) {
+                if (!record(im, plan, p + 4, "\x01", 1, L"policy result forced true"))
+                    return FALSE;
+                ++edits;
+                break;
+            }
+        }
+    }
+    return edits >= 1;
+}
+
 /* 10074-generation ci.dll: the reference media flip four conditional branches so the
    certificate date and policy checks stop rejecting the image. Each site has to be
    unique in the file, otherwise nothing is written. */
